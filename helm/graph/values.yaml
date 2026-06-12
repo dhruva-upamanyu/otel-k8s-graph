@@ -101,11 +101,11 @@ graphK8s:
   # cache; the limit allows for the startup LIST peak (~50-100k pods).
   resources:
     requests:
-      memory: 2Gi
-      cpu: 500m
+      memory: 512Mi
+      cpu: 100m
     limits:
-      memory: 7Gi
-      cpu: "1"
+      memory: 512Mi
+      cpu: 100m
 
 # =============================================================================
 # graph-otel — ingests OTel span metrics over gRPC, writes service
@@ -142,11 +142,11 @@ graphOtel:
   # -- (object) CPU/memory requests and limits.
   resources:
     requests:
-      memory: 1Gi
-      cpu: "1"
+      memory: 512Mi
+      cpu: "200m"
     limits:
-      memory: 1Gi
-      cpu: "1"
+      memory: 512Mi
+      cpu: "200m"
 
 # =============================================================================
 # graph-read — serves the read/query HTTP API from Redis. Stateless, so it
