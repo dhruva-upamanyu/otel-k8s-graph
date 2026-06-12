@@ -71,7 +71,7 @@ graph-read mcp   # stdio MCP; set GRAPH_BASE_URL to the query API endpoint
 | graphK8s.config.resyncPeriod | string | `"5m"` | `WATCH_RESYNC_PERIOD`: how often informers re-list and re-deliver every object (self-heal). Lower = faster correction, more API load. |
 | graphK8s.enabled | bool | `true` | Render the graph-k8s component. |
 | graphK8s.imageName | string | `"graph-k8s"` | Image repository name under `image.registry`. |
-| graphK8s.resources | object | `{"limits":{"cpu":"1","memory":"7Gi"},"requests":{"cpu":"500m","memory":"2Gi"}}` | CPU/memory requests and limits. Memory is sized for the informer cache; the limit allows for the startup LIST peak (~50-100k pods). |
+| graphK8s.resources | object | `{"limits":{"cpu":"100m","memory":"512Mi"},"requests":{"cpu":"100m","memory":"512Mi"}}` | CPU/memory requests and limits. Memory is sized for the informer cache; the limit allows for the startup LIST peak (~50-100k pods). |
 | graphOtel.config.expiryTtl | string | `"100s"` | `GRAPH_EXPIRY_TTL`: drop entities/edges not seen for this long. MUST exceed flushInterval. |
 | graphOtel.config.flushDelay | string | `"200s"` | `GRAPH_FLUSH_DELAY`: wait this long after startup for the in-memory graph to stabilize before the first Redis flush. |
 | graphOtel.config.flushInterval | string | `"60s"` | `GRAPH_FLUSH_INTERVAL`: flush the delta to Redis this often thereafter. |
@@ -80,7 +80,7 @@ graph-read mcp   # stdio MCP; set GRAPH_BASE_URL to the query API endpoint
 | graphOtel.config.listenAddr | string | `":8080"` | `LISTEN_ADDR`: HTTP bind address; serves /healthz only (probes). |
 | graphOtel.enabled | bool | `true` | Render the graph-otel component. |
 | graphOtel.imageName | string | `"graph-otel"` | Image repository name under `image.registry`. |
-| graphOtel.resources | object | `{"limits":{"cpu":"1","memory":"1Gi"},"requests":{"cpu":"1","memory":"1Gi"}}` | CPU/memory requests and limits. |
+| graphOtel.resources | object | `{"limits":{"cpu":"200m","memory":"512Mi"},"requests":{"cpu":"200m","memory":"512Mi"}}` | CPU/memory requests and limits. |
 | graphOtel.service.otlpPort | int | `4317` | OTLP gRPC port. Point the collector's metrics exporter at graph-otel-otlp:<otlpPort>. |
 | graphOtel.service.type | string | `"ClusterIP"` | Service type for the OTLP ingest Service (graph-otel-otlp). |
 | graphRead.config.listenAddr | string | `":8080"` | `LISTEN_ADDR`: HTTP bind address for the query API. |
