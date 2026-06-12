@@ -1,0 +1,67 @@
+{{- if .Values.graphK8s.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: graph-k8s
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: graph-k8s
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: graph-k8s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: graph-k8s
+subjects:
+  - kind: ServiceAccount
+    name: graph-k8s
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-k8s
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: graph-k8s
+spec:
+  replicas: 1 # single authoritative writer; do NOT scale without leader election
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: graph-k8s
+  template:
+    metadata:
+      labels:
+        app: graph-k8s
+    spec:
+      serviceAccountName: graph-k8s
+      containers:
+        - name: graph-k8s
+          image: {{ include "graph.image" (dict "root" $ "name" .Values.graphK8s.imageName) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- include "graph.redisEnv" . | nindent 12 }}
+            - name: WATCH_RESYNC_PERIOD
+              value: {{ .Values.graphK8s.config.resyncPeriod | quote }}
+            - name: WATCH_BATCH_SIZE
+              value: {{ .Values.graphK8s.config.batchSize | quote }}
+            - name: WATCH_BATCH_INTERVAL
+              value: {{ .Values.graphK8s.config.batchInterval | quote }}
+          resources:
+            {{- toYaml .Values.graphK8s.resources | nindent 12 }}
+{{- end }}

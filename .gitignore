@@ -1,0 +1,14 @@
+# Binaries and build output
+/bin/
+/out/
+*.test
+coverage.out
+
+# Editor / OS / local tooling
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Helm packaging
+*.tgz

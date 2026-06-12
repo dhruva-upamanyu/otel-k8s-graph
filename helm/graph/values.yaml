@@ -1,0 +1,178 @@
+# Default values for the graph chart.
+#
+# Per-application env vars live under `<app>.config`; Redis/graph settings are
+# shared across all three apps and live at the top level. Descriptions use the
+# helm-docs `# --` convention and are rendered into README.md.
+
+# =============================================================================
+# Image — all three components are built together and share one tag.
+# =============================================================================
+image:
+  # -- (string) Container registry for all images, no trailing slash; REQUIRED
+  # (no default). The image ref is `<registry>/<app imageName>:<tag>`.
+  registry: ""
+  # -- Shared image tag for all three components. `latest` tracks the most
+  # recent deploy.sh build; deploy.sh pins the exact version at install time.
+  tag: "latest"
+  # -- imagePullPolicy applied to every component. `Always` because the
+  # default tag is a moving target.
+  pullPolicy: Always
+
+# =============================================================================
+# Redis — the graph store, shared by all three components.
+#
+# Bundled (default): `internal.enabled: true` deploys a single-replica Redis
+# StatefulSet in-release and wires all components to it. External: set
+# `internal.enabled: false` and either fill in host/username/password inline
+# or point `existingSecret` at a Kubernetes Secret.
+# =============================================================================
+redis:
+  internal:
+    # -- Deploy a bundled single-replica Redis and use it (ignores
+    # host/username/password/existingSecret below).
+    enabled: true
+    # -- Image for the bundled Redis.
+    image: redis:8-alpine
+    # -- (object) CPU/memory requests and limits for the bundled Redis.
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 100m
+      limits:
+        memory: 1Gi
+        cpu: 500m
+    persistence:
+      # -- Persist Redis data in a PVC. Off by default: the graph is fully
+      # rebuilt from the Kubernetes API and OTel metrics after a restart.
+      enabled: false
+      # -- PVC size when persistence is enabled.
+      size: 1Gi
+      # -- StorageClass for the PVC. Empty = cluster default.
+      storageClassName: ""
+  # -- `REDIS_HOST` for external Redis (used only when `internal.enabled` is
+  # false and `existingSecret` is empty).
+  host: ""
+  # -- `REDIS_PORT`. Always inline.
+  port: "6379"
+  # -- `REDIS_USER` (Redis ACL user) for external Redis. Empty = default user.
+  username: ""
+  # -- `REDIS_PASSWORD` for external Redis. Empty = no auth.
+  password: ""
+  # -- `REDIS_DB` logical database index. Always inline.
+  db: 0
+  # -- Name of an existing Secret to source host/username/password from (via
+  # secretKeyRef; only when `internal.enabled` is false).
+  existingSecret: ""
+  # -- (object) Keys within `existingSecret` for host/username/password (used
+  # only when `existingSecret` is set; username/password are optional).
+  secretKeys:
+    host: REDIS_HOST
+    username: REDIS_USER
+    password: REDIS_PASSWORD
+
+# =============================================================================
+# Graph — Redis storage, shared.
+# =============================================================================
+graph:
+  # -- `GRAPH_REDIS_KEY_PREFIX` namespacing every Redis key. All three
+  # components MUST agree on this to share one graph.
+  keyPrefix: graph
+
+# =============================================================================
+# graph-k8s — watches the Kubernetes API, writes structural graph entities
+# (namespace/node/deployment/pod/container + containment edges). Single
+# authoritative writer: replicas is fixed at 1 in the template.
+# =============================================================================
+graphK8s:
+  # -- Render the graph-k8s component.
+  enabled: true
+  # -- Image repository name under `image.registry`.
+  imageName: graph-k8s
+  config:
+    # -- `WATCH_RESYNC_PERIOD`: how often informers re-list and re-deliver every
+    # object (self-heal). Lower = faster correction, more API load.
+    resyncPeriod: 5m
+    # -- `WATCH_BATCH_SIZE`: flush the Redis pipeline once this many commands are
+    # buffered (the burst path during initial sync).
+    batchSize: 1000
+    # -- `WATCH_BATCH_INTERVAL`: flush partial batches at least this often.
+    batchInterval: 5s
+  # -- (object) CPU/memory requests and limits. Memory is sized for the informer
+  # cache; the limit allows for the startup LIST peak (~50-100k pods).
+  resources:
+    requests:
+      memory: 2Gi
+      cpu: 500m
+    limits:
+      memory: 7Gi
+      cpu: "1"
+
+# =============================================================================
+# graph-otel — ingests OTel span metrics over gRPC, writes service
+# relationships (endpoint/topic/database + CALLS/QUERIES/PUBLISHES/EXPOSES).
+# Single relationship writer: replicas is fixed at 1 in the template.
+# =============================================================================
+graphOtel:
+  # -- Render the graph-otel component.
+  enabled: true
+  # -- Image repository name under `image.registry`.
+  imageName: graph-otel
+  config:
+    # -- `LISTEN_ADDR`: HTTP bind address; serves /healthz only (probes).
+    listenAddr: ":8080"
+    # -- `GRPC_LISTEN_ADDR`: OTLP/gRPC bind address (collector pushes metrics here).
+    grpcListenAddr: ":4317"
+    # -- `GRPC_MAX_RECV_MSG_MIB`: max decompressed OTLP message size (MiB). Raise
+    # if collectors batch high-cardinality metrics past gRPC's 4 MiB default.
+    grpcMaxRecvMsgMib: 32
+    # -- `GRAPH_FLUSH_DELAY`: wait this long after startup for the in-memory
+    # graph to stabilize before the first Redis flush.
+    flushDelay: 200s
+    # -- `GRAPH_FLUSH_INTERVAL`: flush the delta to Redis this often thereafter.
+    flushInterval: 60s
+    # -- `GRAPH_EXPIRY_TTL`: drop entities/edges not seen for this long. MUST
+    # exceed flushInterval.
+    expiryTtl: 100s
+  service:
+    # -- Service type for the OTLP ingest Service (graph-otel-otlp).
+    type: ClusterIP
+    # -- OTLP gRPC port. Point the collector's metrics exporter at
+    # graph-otel-otlp:<otlpPort>.
+    otlpPort: 4317
+  # -- (object) CPU/memory requests and limits.
+  resources:
+    requests:
+      memory: 1Gi
+      cpu: "1"
+    limits:
+      memory: 1Gi
+      cpu: "1"
+
+# =============================================================================
+# graph-read — serves the read/query HTTP API from Redis. Stateless, so it
+# may be scaled. (The MCP server is this same image run locally as
+# `graph-read mcp`; it is not deployed in-cluster.)
+# =============================================================================
+graphRead:
+  # -- Render the graph-read component.
+  enabled: true
+  # -- Replica count (stateless reader; safe to raise).
+  replicas: 1
+  # -- Image repository name under `image.registry`.
+  imageName: graph-read
+  config:
+    # -- `LISTEN_ADDR`: HTTP bind address for the query API.
+    listenAddr: ":8080"
+  service:
+    # -- Service type for the query API.
+    type: ClusterIP
+    # -- Service port for the query API.
+    port: 8080
+  # -- (object) CPU/memory requests and limits.
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
