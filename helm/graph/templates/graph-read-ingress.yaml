@@ -1,0 +1,36 @@
+{{- if and .Values.graphRead.enabled .Values.graphRead.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: graph-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: graph-read
+  {{- with .Values.graphRead.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.graphRead.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.graphRead.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.graphRead.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: graph-read
+                port:
+                  number: {{ $.Values.graphRead.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

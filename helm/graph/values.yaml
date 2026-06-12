@@ -168,6 +168,26 @@ graphRead:
     type: ClusterIP
     # -- Service port for the query API.
     port: 8080
+  ingress:
+    # -- Expose the query API via an Ingress. The API has NO auth and includes
+    # the destructive POST /prune — add auth at the ingress (e.g. basic-auth /
+    # oauth2-proxy annotations) or restrict source IPs before exposing it.
+    enabled: false
+    # -- IngressClass name (e.g. nginx). Empty = the cluster default.
+    className: ""
+    # -- (object) Annotations for the Ingress (cert-manager, auth, rate
+    # limits, ...).
+    annotations: {}
+    # -- (list) Hostnames and paths routed to the graph-read Service.
+    hosts:
+      - host: graph.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    # -- (list) Ingress TLS configuration.
+    tls: []
+    #  - secretName: graph-tls
+    #    hosts: [graph.example.com]
   # -- (object) CPU/memory requests and limits.
   resources:
     requests:

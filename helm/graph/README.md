@@ -53,6 +53,27 @@ kubectl create secret generic redis-creds \
 helm ... --set redis.internal.enabled=false --set redis.existingSecret=redis-creds
 ```
 
+## Exposing the API (Ingress)
+
+Off by default. **The query API has no authentication and includes the
+destructive `POST /prune`** — put auth in front (e.g. ingress basic-auth or
+oauth2-proxy annotations) or restrict source IPs before exposing it.
+
+```bash
+helm ... \
+  --set graphRead.ingress.enabled=true \
+  --set graphRead.ingress.className=nginx \
+  --set graphRead.ingress.hosts[0].host=graph.example.com \
+  --set graphRead.ingress.hosts[0].paths[0].path=/ \
+  --set graphRead.ingress.hosts[0].paths[0].pathType=Prefix
+```
+
+Once exposed, the MCP server can run anywhere:
+
+```bash
+GRAPH_BASE_URL=https://graph.example.com graph-read mcp
+```
+
 ## MCP server
 
 `graph-read` doubles as the MCP server when run locally (not in-cluster):
@@ -86,6 +107,11 @@ graph-read mcp   # stdio MCP; set GRAPH_BASE_URL to the query API endpoint
 | graphRead.config.listenAddr | string | `":8080"` | `LISTEN_ADDR`: HTTP bind address for the query API. |
 | graphRead.enabled | bool | `true` | Render the graph-read component. |
 | graphRead.imageName | string | `"graph-read"` | Image repository name under `image.registry`. |
+| graphRead.ingress.annotations | object | `{}` | Annotations for the Ingress (cert-manager, auth, rate limits, ...). |
+| graphRead.ingress.className | string | `""` | IngressClass name (e.g. nginx). Empty = the cluster default. |
+| graphRead.ingress.enabled | bool | `false` | Expose the query API via an Ingress. The API has NO auth and includes the destructive POST /prune — add auth at the ingress (e.g. basic-auth / oauth2-proxy annotations) or restrict source IPs before exposing it. |
+| graphRead.ingress.hosts | list | `[{"host":"graph.example.com","paths":[{"path":"/","pathType":"Prefix"}]}]` | Hostnames and paths routed to the graph-read Service. |
+| graphRead.ingress.tls | list | `[]` | Ingress TLS configuration. |
 | graphRead.replicas | int | `1` | Replica count (stateless reader; safe to raise). |
 | graphRead.resources | object | `{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"100m","memory":"256Mi"}}` | CPU/memory requests and limits. |
 | graphRead.service.port | int | `8080` | Service port for the query API. |

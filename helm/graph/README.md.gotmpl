@@ -53,6 +53,27 @@ kubectl create secret generic redis-creds \
 helm ... --set redis.internal.enabled=false --set redis.existingSecret=redis-creds
 ```
 
+## Exposing the API (Ingress)
+
+Off by default. **The query API has no authentication and includes the
+destructive `POST /prune`** — put auth in front (e.g. ingress basic-auth or
+oauth2-proxy annotations) or restrict source IPs before exposing it.
+
+```bash
+helm ... \
+  --set graphRead.ingress.enabled=true \
+  --set graphRead.ingress.className=nginx \
+  --set graphRead.ingress.hosts[0].host=graph.example.com \
+  --set graphRead.ingress.hosts[0].paths[0].path=/ \
+  --set graphRead.ingress.hosts[0].paths[0].pathType=Prefix
+```
+
+Once exposed, the MCP server can run anywhere:
+
+```bash
+GRAPH_BASE_URL=https://graph.example.com graph-read mcp
+```
+
 ## MCP server
 
 `graph-read` doubles as the MCP server when run locally (not in-cluster):
