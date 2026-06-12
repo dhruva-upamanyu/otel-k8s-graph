@@ -7,9 +7,11 @@ import (
 
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func hasEntity(d Desired, id string, kind graph.Kind) bool {
@@ -455,5 +457,241 @@ func TestMapPod_NoOwner(t *testing.T) {
 		case graph.KindDeployment, graph.KindStatefulSet, graph.KindDaemonSet, graph.KindJob:
 			t.Errorf("unexpected owner entity %s (%s) when no owner provided", e.ID, e.Kind)
 		}
+	}
+}
+
+// ---- TestMapJob_NonCronJobOwnerIgnored (Task A review follow-up) ----
+
+func TestMapJob_NonCronJobOwnerIgnored(t *testing.T) {
+	j := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rogue-job", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "Node", Name: "node-a"},
+			},
+		},
+	}
+	d := MapJob(j)
+	if !hasEntity(d, "job:default/rogue-job", graph.KindJob) {
+		t.Error("missing job entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity (job only), got %d: %+v", len(d.Entities), d.Entities)
+	}
+	if len(d.Edges) != 0 {
+		t.Errorf("expected no edges for non-CronJob owner, got %d: %+v", len(d.Edges), d.Edges)
+	}
+}
+
+// ---- HPA tests ----
+
+func TestMapHPA_DeploymentTarget(t *testing.T) {
+	minR := int32(2)
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-hpa", Namespace: "prod",
+			Labels: map[string]string{"team": "platform"},
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: &minR,
+			MaxReplicas: 10,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "Deployment",
+				Name: "web",
+			},
+		},
+	}
+	d := MapHPA(h)
+
+	hpaIDv := "hpa:prod/web-hpa"
+	depIDv := "deployment:prod/web"
+	if !hasEntity(d, hpaIDv, graph.KindHPA) {
+		t.Error("missing hpa entity")
+	}
+	if !hasEntity(d, depIDv, graph.KindDeployment) {
+		t.Error("missing deployment entity (upserted target)")
+	}
+	if !hasEdge(d, hpaIDv, graph.EdgeScales, depIDv) {
+		t.Error("missing hpa SCALES deployment edge")
+	}
+	if !hasEdge(d, depIDv, graph.EdgeScaledBy, hpaIDv) {
+		t.Error("missing deployment SCALED_BY hpa edge")
+	}
+	// Metadata checks on hpa entity
+	for _, e := range d.Entities {
+		if e.ID != hpaIDv {
+			continue
+		}
+		if e.Metadata["hpa.min_replicas"] != "2" {
+			t.Errorf("hpa.min_replicas = %q, want 2", e.Metadata["hpa.min_replicas"])
+		}
+		if e.Metadata["hpa.max_replicas"] != "10" {
+			t.Errorf("hpa.max_replicas = %q, want 10", e.Metadata["hpa.max_replicas"])
+		}
+		if e.Metadata["hpa.target.kind"] != "Deployment" {
+			t.Errorf("hpa.target.kind = %q, want Deployment", e.Metadata["hpa.target.kind"])
+		}
+		if e.Metadata["hpa.target.name"] != "web" {
+			t.Errorf("hpa.target.name = %q, want web", e.Metadata["hpa.target.name"])
+		}
+		if e.Metadata["label.team"] != "platform" {
+			t.Errorf("label.team = %q, want platform", e.Metadata["label.team"])
+		}
+	}
+}
+
+func TestMapHPA_NilMinReplicas(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-hpa", Namespace: "prod"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: nil,
+			MaxReplicas: 5,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "Deployment",
+				Name: "web",
+			},
+		},
+	}
+	d := MapHPA(h)
+	for _, e := range d.Entities {
+		if e.ID == "hpa:prod/web-hpa" {
+			if e.Metadata["hpa.min_replicas"] != "1" {
+				t.Errorf("nil MinReplicas: hpa.min_replicas = %q, want 1", e.Metadata["hpa.min_replicas"])
+			}
+		}
+	}
+}
+
+func TestMapHPA_StatefulSetTarget(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "db-hpa", Namespace: "data"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: 4,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "StatefulSet",
+				Name: "postgres",
+			},
+		},
+	}
+	d := MapHPA(h)
+	ssIDv := "statefulset:data/postgres"
+	hpaIDv := "hpa:data/db-hpa"
+	if !hasEntity(d, ssIDv, graph.KindStatefulSet) {
+		t.Error("missing statefulset entity")
+	}
+	if !hasEdge(d, hpaIDv, graph.EdgeScales, ssIDv) {
+		t.Error("missing hpa SCALES statefulset edge")
+	}
+	if !hasEdge(d, ssIDv, graph.EdgeScaledBy, hpaIDv) {
+		t.Error("missing statefulset SCALED_BY hpa edge")
+	}
+}
+
+func TestMapHPA_RolloutTarget(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "canary-hpa", Namespace: "prod"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: ptr.To(int32(2)),
+			MaxReplicas: 8,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "Rollout",
+				Name: "canary",
+			},
+		},
+	}
+	d := MapHPA(h)
+	rollIDv := "rollout:prod/canary"
+	hpaIDv := "hpa:prod/canary-hpa"
+	if !hasEntity(d, rollIDv, graph.KindRollout) {
+		t.Error("missing rollout entity")
+	}
+	if !hasEdge(d, hpaIDv, graph.EdgeScales, rollIDv) {
+		t.Error("missing hpa SCALES rollout edge")
+	}
+	if !hasEdge(d, rollIDv, graph.EdgeScaledBy, hpaIDv) {
+		t.Error("missing rollout SCALED_BY hpa edge")
+	}
+}
+
+func TestMapHPA_UnmodeledTargetNoEdge(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs-hpa", Namespace: "default"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: 3,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "ReplicaSet",
+				Name: "my-rs",
+			},
+		},
+	}
+	d := MapHPA(h)
+	hpaIDv := "hpa:default/rs-hpa"
+	if !hasEntity(d, hpaIDv, graph.KindHPA) {
+		t.Error("missing hpa entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity (hpa only for unmodeled target), got %d: %+v", len(d.Entities), d.Entities)
+	}
+	if len(d.Edges) != 0 {
+		t.Errorf("expected no edges for unmodeled target, got %d: %+v", len(d.Edges), d.Edges)
+	}
+	// metadata still records the target
+	for _, e := range d.Entities {
+		if e.ID == hpaIDv {
+			if e.Metadata["hpa.target.kind"] != "ReplicaSet" {
+				t.Errorf("hpa.target.kind = %q, want ReplicaSet", e.Metadata["hpa.target.kind"])
+			}
+			if e.Metadata["hpa.target.name"] != "my-rs" {
+				t.Errorf("hpa.target.name = %q, want my-rs", e.Metadata["hpa.target.name"])
+			}
+		}
+	}
+}
+
+func TestMapHPA_KedaOwned(t *testing.T) {
+	h := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "keda-hpa", Namespace: "prod",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ScaledObject", Name: "my-scaled-obj"},
+			},
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: ptr.To(int32(1)),
+			MaxReplicas: 20,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "Deployment",
+				Name: "api",
+			},
+		},
+	}
+	d := MapHPA(h)
+
+	hpaIDv := "hpa:prod/keda-hpa"
+	soIDv := "scaledobject:prod/my-scaled-obj"
+	depIDv := "deployment:prod/api"
+
+	if !hasEntity(d, hpaIDv, graph.KindHPA) {
+		t.Error("missing hpa entity")
+	}
+	if !hasEntity(d, soIDv, graph.KindScaledObject) {
+		t.Error("missing scaledobject entity")
+	}
+	if !hasEntity(d, depIDv, graph.KindDeployment) {
+		t.Error("missing deployment entity")
+	}
+	if !hasEdge(d, soIDv, graph.EdgeManages, hpaIDv) {
+		t.Error("missing scaledobject MANAGES hpa edge")
+	}
+	if !hasEdge(d, hpaIDv, graph.EdgeManagedBy, soIDv) {
+		t.Error("missing hpa MANAGED_BY scaledobject edge")
+	}
+	if !hasEdge(d, hpaIDv, graph.EdgeScales, depIDv) {
+		t.Error("missing hpa SCALES deployment edge")
+	}
+	if !hasEdge(d, depIDv, graph.EdgeScaledBy, hpaIDv) {
+		t.Error("missing deployment SCALED_BY hpa edge")
 	}
 }

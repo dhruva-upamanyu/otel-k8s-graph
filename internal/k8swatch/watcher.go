@@ -9,6 +9,7 @@ import (
 
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -168,6 +169,13 @@ func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duratio
 		}
 		return MapCronJob(cj), true
 	})
+	wt.registerSingle(f.Autoscaling().V2().HorizontalPodAutoscalers().Informer(), func(o any) (Desired, bool) {
+		h, ok := o.(*autoscalingv2.HorizontalPodAutoscaler)
+		if !ok {
+			return Desired{}, false
+		}
+		return MapHPA(h), true
+	})
 	// ReplicaSets are watched only to resolve pod->owner; no handlers.
 	// Referenced here so the factory starts and syncs the informer.
 	f.Apps().V1().ReplicaSets().Informer()
@@ -249,7 +257,8 @@ func (wt *Watcher) ownerForPod(p *corev1.Pod) (id, name string, kind graph.Kind)
 		case "ReplicaSet":
 			rs, err := wt.rsLister.ReplicaSets(p.Namespace).Get(ref.Name)
 			if err != nil {
-				return "", "", ""
+				// RS not yet in cache or deleted; try the next ownerRef.
+				continue
 			}
 			for _, rref := range rs.OwnerReferences {
 				switch rref.Kind {

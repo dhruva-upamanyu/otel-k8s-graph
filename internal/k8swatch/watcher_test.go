@@ -364,3 +364,29 @@ func TestOwnerForPod_NoOwner(t *testing.T) {
 		t.Errorf("expected no owner, got id=%q name=%q kind=%q", id, name, kind)
 	}
 }
+
+// TestOwnerForPod_BareReplicaSet: RS exists in lister but has no ownerRefs.
+// ownerForPod must return empty ("", "", "") without panicking.
+func TestOwnerForPod_BareReplicaSet(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "bare-rs",
+			Namespace:       "default",
+			OwnerReferences: nil, // no owner
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bare-pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "bare-rs"},
+			},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != "" || name != "" || kind != "" {
+		t.Errorf("bare RS: expected no owner, got id=%q name=%q kind=%q", id, name, kind)
+	}
+}

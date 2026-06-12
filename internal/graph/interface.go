@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package graph models the graph of Kubernetes and OTel-derived
-// entities (namespaces, nodes, zones, regions, deployments, pods, containers,
+// entities (namespaces, nodes, zones, regions, deployments, statefulsets,
+// daemonsets, jobs, cronjobs, rollouts, hpas, scaledobjects, pods, containers,
 // endpoints, topics, databases) and the edges between them.
 //
 // The read surface is the Graph interface, implemented by RedisGraph

@@ -2,8 +2,9 @@
 
 // Package k8swatch derives the structural graph from Kubernetes
 // objects. This file holds the pure mapping from K8s objects (pods, nodes,
-// namespaces, deployments, statefulsets, daemonsets, jobs, cronjobs) to graph
-// entities and edges; the informer wiring and Redis writes live in watcher.go.
+// namespaces, deployments, statefulsets, daemonsets, jobs, cronjobs, hpas) to
+// graph entities and edges; the informer wiring and Redis writes live in
+// watcher.go.
 //
 // MapNode additionally derives zone and region entities from the well-known
 // topology labels (topology.kubernetes.io/zone|region), falling back to
@@ -12,8 +13,11 @@
 package k8swatch
 
 import (
+	"strconv"
+
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -50,18 +54,20 @@ func (d *Desired) addPair(fromID string, fwd graph.EdgeKind, toID string, rev gr
 	)
 }
 
-func podID(ns, name string) string         { return "pod:" + ns + "/" + name }
-func containerID(ns, pod, c string) string { return "container:" + ns + "/" + pod + "/" + c }
-func nsID(name string) string              { return "namespace:" + name }
-func nodeID(name string) string            { return "node:" + name }
-func zoneID(name string) string            { return "zone:" + name }
-func regionID(name string) string          { return "region:" + name }
-func deploymentID(ns, name string) string  { return "deployment:" + ns + "/" + name }
-func statefulSetID(ns, name string) string { return "statefulset:" + ns + "/" + name }
-func daemonSetID(ns, name string) string   { return "daemonset:" + ns + "/" + name }
-func jobID(ns, name string) string         { return "job:" + ns + "/" + name }
-func cronJobID(ns, name string) string     { return "cronjob:" + ns + "/" + name }
-func rolloutID(ns, name string) string     { return "rollout:" + ns + "/" + name }
+func podID(ns, name string) string          { return "pod:" + ns + "/" + name }
+func containerID(ns, pod, c string) string  { return "container:" + ns + "/" + pod + "/" + c }
+func nsID(name string) string               { return "namespace:" + name }
+func nodeID(name string) string             { return "node:" + name }
+func zoneID(name string) string             { return "zone:" + name }
+func regionID(name string) string           { return "region:" + name }
+func deploymentID(ns, name string) string   { return "deployment:" + ns + "/" + name }
+func statefulSetID(ns, name string) string  { return "statefulset:" + ns + "/" + name }
+func daemonSetID(ns, name string) string    { return "daemonset:" + ns + "/" + name }
+func jobID(ns, name string) string          { return "job:" + ns + "/" + name }
+func cronJobID(ns, name string) string      { return "cronjob:" + ns + "/" + name }
+func rolloutID(ns, name string) string      { return "rollout:" + ns + "/" + name }
+func hpaID(ns, name string) string          { return "hpa:" + ns + "/" + name }
+func scaledObjectID(ns, name string) string { return "scaledobject:" + ns + "/" + name }
 
 // nodeTopologyLabel returns the value of a topology label from node labels,
 // preferring the modern topology.kubernetes.io/<suffix> form and falling
@@ -185,6 +191,66 @@ func MapCronJob(cj *batchv1.CronJob) Desired {
 	}
 	md["cronjob.schedule"] = cj.Spec.Schedule
 	d.addEntity(cronJobID(cj.Namespace, cj.Name), graph.KindCronJob, cj.Name, md)
+	return d
+}
+
+// MapHPA maps a HorizontalPodAutoscaler entity. It emits a SCALES/SCALED_BY
+// edge pair for Deployment, StatefulSet, and Rollout scale targets (upserting
+// the target entity with nil metadata). For any other target kind (e.g.
+// ReplicaSet, custom CRDs) no edge is emitted — the target kind/name are
+// recorded in the HPA metadata instead.
+//
+// If the HPA is owned by a KEDA ScaledObject, the scaledobject entity is
+// upserted and a MANAGES/MANAGED_BY pair is added.
+func MapHPA(h *autoscalingv2.HorizontalPodAutoscaler) Desired {
+	var d Desired
+	ns := h.Namespace
+	id := hpaID(ns, h.Name)
+
+	// Build metadata: start from label map then add HPA-specific keys.
+	md := labelMeta(h.Labels)
+	if md == nil {
+		md = map[string]string{}
+	}
+	minR := int32(1)
+	if h.Spec.MinReplicas != nil {
+		minR = *h.Spec.MinReplicas
+	}
+	md["hpa.min_replicas"] = strconv.Itoa(int(minR))
+	md["hpa.max_replicas"] = strconv.Itoa(int(h.Spec.MaxReplicas))
+	md["hpa.target.kind"] = h.Spec.ScaleTargetRef.Kind
+	md["hpa.target.name"] = h.Spec.ScaleTargetRef.Name
+
+	d.addEntity(id, graph.KindHPA, h.Name, md)
+
+	// Emit SCALES/SCALED_BY edge for modeled target kinds.
+	targetName := h.Spec.ScaleTargetRef.Name
+	switch h.Spec.ScaleTargetRef.Kind {
+	case "Deployment":
+		tID := deploymentID(ns, targetName)
+		d.addEntity(tID, graph.KindDeployment, targetName, nil)
+		d.addPair(id, graph.EdgeScales, tID, graph.EdgeScaledBy)
+	case "StatefulSet":
+		tID := statefulSetID(ns, targetName)
+		d.addEntity(tID, graph.KindStatefulSet, targetName, nil)
+		d.addPair(id, graph.EdgeScales, tID, graph.EdgeScaledBy)
+	case "Rollout":
+		tID := rolloutID(ns, targetName)
+		d.addEntity(tID, graph.KindRollout, targetName, nil)
+		d.addPair(id, graph.EdgeScales, tID, graph.EdgeScaledBy)
+		// Any other kind: metadata already records it; no edge emitted.
+	}
+
+	// KEDA chain: if this HPA is owned by a ScaledObject, upsert it and link.
+	for _, ref := range h.OwnerReferences {
+		if ref.Kind == "ScaledObject" {
+			soID := scaledObjectID(ns, ref.Name)
+			d.addEntity(soID, graph.KindScaledObject, ref.Name, nil)
+			d.addPair(soID, graph.EdgeManages, id, graph.EdgeManagedBy)
+			break
+		}
+	}
+
 	return d
 }
 
