@@ -9,9 +9,11 @@ scripts, and LLM agents.
 - **Service relationships** — which service calls which HTTP endpoint, queries
   which database, publishes to which topic — from **OTel span metrics**.
 
-The result is one graph you can ask things like *"what services call
-`/v1/checkout`?"*, *"how many upstream dependencies does this deployment
-have?"*, or *"which services talk to the `mysql` database at `10.0.0.0`?"* —
+The result is one graph you can ask things like 
+*"what pods call `/v1/checkout` vs what pods call `/v2/checkout` (can i safely deprecate v1)?"*,
+*"how many upstream dependencies does this deployment have? - (what services are impacted by this deployment)"*, 
+*"how many apis are there that are exposed but dont have callers??- (find dead code)"*, 
+*"which services talk to the `mysql` database at `10.0.0.0`?"* —
 over REST, or from Claude/any MCP client.
 
 ## Architecture
@@ -39,7 +41,9 @@ is self-contained:
 
 ```bash
 # 1. Build + push the three images (versioned + latest) and install the chart:
-REGISTRY=<your-registry> ./deploy.sh
+REGISTRY=<your-registry> ./deploy.sh # add a registry here that your k8s cluster can access,
+#                                      the script will build and push the image,
+#                                      update the helm chart and run the helm install command 
 
 # 2. Point your OTel Collector's span-metrics exporter at graph-otel:
 #      endpoint: graph-otel-otlp:4317
