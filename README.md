@@ -9,9 +9,11 @@ scripts, and LLM agents.
 - **Service relationships** — which service calls which HTTP endpoint, queries
   which database, publishes to which topic — from **OTel span metrics**.
 
-The result is one graph you can ask things like *"what services call
-`/v1/checkout`?"*, *"how many upstream dependencies does this deployment
-have?"*, or *"which services talk to the `mysql` database at `10.0.0.0`?"* —
+The result is one graph you can ask things like 
+*"what pods call `/v1/checkout` vs what pods call `/v2/checkout` (can i safely deprecate v1)?"*,
+*"how many upstream dependencies does this deployment have? - (what services are impacted by this deployment)"*, 
+*"how many apis are there that are exposed but dont have callers??- (find dead code)"*, 
+*"which services talk to the `mysql` database at `10.0.0.0`?"* —
 over REST, or from Claude/any MCP client.
 
 ## Architecture
