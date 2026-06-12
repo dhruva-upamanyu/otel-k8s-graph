@@ -1,7 +1,7 @@
 # graph-k8s
 
 Watches the Kubernetes API and writes the **k8s derived** graph to Redis:
-`namespace`, `node`, `deployment`, `pod`, `container` entities and the
+`namespace`, `node`, `zone`, `region`, `deployment`, `pod`, `container` entities and the
 `CONTAINS`/`RUNS_IN`/`MANAGES`/`MANAGED_BY` edges between them.
 
 It is the **data source** for k8s derived entities — it creates and deletes
@@ -15,7 +15,8 @@ these entities based only on Kubernetes events.
    (one replica), not a polling loop.
 2. **Map.** A pure mapper turns each object into a `Desired` set of
    entities + edges (e.g. a pod yields its pod and container entities, plus
-   namespace/node/deployment containment edges).
+   namespace/node/deployment containment edges; a node with topology labels
+   additionally yields zone and region entities and their containment edges).
 3. **Diff & apply.** On update it diffs old vs new `Desired` and emits only the
    delta. It deletes only entities it *owns* (the pod and its containers) — a
    pod moving off a node removes the *edge*, never the live node.

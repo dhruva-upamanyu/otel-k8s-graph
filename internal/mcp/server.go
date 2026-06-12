@@ -15,13 +15,13 @@ import (
 const instructions = `You are exploring Kubernetes microservices based environment using a graph built from Kubernetes API state (cluster structure) and OTel span metrics (service relationships).
 
 The graph has these entity kinds:
-- namespace, node, deployment, pod, container — Kubernetes structure
+- namespace, node, zone, region, deployment, pod, container — Kubernetes structure
 - endpoint — an HTTP route served by some service (id: endpoint:<service>/<METHOD>/<route>)
 - topic — a messaging destination (id: topic:<name>)
 - database — a queried datastore (id: database:<system>/<host>[:<port>])
 
 Edge kinds and their meaning:
-- CONTAINS / RUNS_IN — structural hierarchy (namespace contains pod, pod contains container, node contains pod)
+- CONTAINS / RUNS_IN — structural hierarchy (namespace contains pod, pod contains container, node contains pod, zone contains node, region contains zone)
 - MANAGES / MANAGED_BY — Deployment controller relationship
 - EXPOSES / EXPOSED_BY — server side of an HTTP endpoint
 - CALLS / CALLED_BY — client side of an HTTP endpoint (container -> endpoint)

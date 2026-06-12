@@ -146,8 +146,7 @@ existing metrics pipeline.
 
 ## The graph
 
-**Entity kinds:** `namespace`, `node`, `deployment`, `pod`, `container`
-(K8s derived); `endpoint`, `topic`, `database` (span metrics derived).
+**Entity kinds:** `namespace`, `node`, `zone`, `region`, `deployment`, `pod`, `container` (K8s derived); `endpoint`, `topic`, `database` (span metrics derived).
 
 **Edge kinds:** `CONTAINS`/`RUNS_IN`, `MANAGES`/`MANAGED_BY` (K8s derived);
 `EXPOSES`/`EXPOSED_BY`, `CALLS`/`CALLED_BY`, `PUBLISHES`/`PUBLISHED_BY`,
@@ -158,6 +157,8 @@ edges carry an `action` (the SQL/command).
 **Entity IDs** are namespace-qualified where applicable: `pod:<ns>/<name>`,
 `container:<ns>/<pod>/<name>`, `endpoint:<service>/<METHOD>/<route>`,
 `database:<system>/<host>[:<port>]`, `topic:<name>`.
+
+**Zones & regions.** Nodes carrying the well-known `topology.kubernetes.io/zone` / `region` labels (or their legacy `failure-domain.beta.kubernetes.io` forms) produce `zone` and `region` entities: `region CONTAINS zone CONTAINS node`. Cross-zone questions — *"which services call auth-service from another zone?"* — become short graph walks: pod → node → zone on each side of a `CALLS` edge.
 
 ### Redis schema (prefix configurable, default `graph`)
 

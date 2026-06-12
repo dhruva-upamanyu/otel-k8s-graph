@@ -4,6 +4,11 @@
 // objects. This file holds the pure mapping from K8s objects (pods, nodes,
 // namespaces, deployments) to graph entities and edges; the informer
 // wiring and Redis writes live in watcher.go.
+//
+// MapNode additionally derives zone and region entities from the well-known
+// topology labels (topology.kubernetes.io/zone|region), falling back to
+// their legacy failure-domain.beta.kubernetes.io equivalents. The resulting
+// hierarchy is: region CONTAINS zone CONTAINS node.
 package k8swatch
 
 import (
@@ -48,7 +53,19 @@ func podID(ns, name string) string         { return "pod:" + ns + "/" + name }
 func containerID(ns, pod, c string) string { return "container:" + ns + "/" + pod + "/" + c }
 func nsID(name string) string              { return "namespace:" + name }
 func nodeID(name string) string            { return "node:" + name }
+func zoneID(name string) string            { return "zone:" + name }
+func regionID(name string) string          { return "region:" + name }
 func deploymentID(ns, name string) string  { return "deployment:" + ns + "/" + name }
+
+// nodeTopologyLabel returns the value of a topology label from node labels,
+// preferring the modern topology.kubernetes.io/<suffix> form and falling
+// back to the legacy failure-domain.beta.kubernetes.io/<suffix> form.
+func nodeTopologyLabel(labels map[string]string, suffix string) string {
+	if v := labels["topology.kubernetes.io/"+suffix]; v != "" {
+		return v
+	}
+	return labels["failure-domain.beta.kubernetes.io/"+suffix]
+}
 
 // MapPod maps a Pod (deploymentName="" if it has no resolvable Deployment).
 func MapPod(p *corev1.Pod, deploymentName string) Desired {
@@ -78,9 +95,32 @@ func MapPod(p *corev1.Pod, deploymentName string) Desired {
 
 // MapNode / MapNamespace / MapDeployment map their objects to a single entity
 // each. Their edges to pods are emitted by MapPod (so pod churn maintains them).
+//
+// MapNode also derives zone and region entities from the well-known topology
+// labels. A zone is only emitted when the zone label is present; a region is
+// only emitted when both zone and region labels are present (region attaches
+// to the zone — without a zone there is nothing sensible to link it to).
 func MapNode(n *corev1.Node) Desired {
 	var d Desired
-	d.addEntity(nodeID(n.Name), graph.KindNode, n.Name, labelMeta(n.Labels))
+	nID := nodeID(n.Name)
+	d.addEntity(nID, graph.KindNode, n.Name, labelMeta(n.Labels))
+
+	zone := nodeTopologyLabel(n.Labels, "zone")
+	if zone == "" {
+		return d
+	}
+	zID := zoneID(zone)
+	d.addEntity(zID, graph.KindZone, zone, nil)
+	d.addPair(zID, graph.EdgeContains, nID, graph.EdgeRunsIn)
+
+	region := nodeTopologyLabel(n.Labels, "region")
+	if region == "" {
+		return d
+	}
+	rID := regionID(region)
+	d.addEntity(rID, graph.KindRegion, region, nil)
+	d.addPair(rID, graph.EdgeContains, zID, graph.EdgeRunsIn)
+
 	return d
 }
 

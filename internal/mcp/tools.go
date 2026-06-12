@@ -14,7 +14,7 @@ import (
 
 type SearchInput struct {
 	Query string `json:"query" jsonschema:"required keyword to match (case-insensitive substring) against entity IDs, names, metadata values, and edge actions"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional entity kind filter: namespace | node | deployment | pod | container | endpoint | topic | database. Omit to search all kinds."`
+	Kind  string `json:"kind,omitempty" jsonschema:"optional entity kind filter: namespace | node | zone | region | deployment | pod | container | endpoint | topic | database. Omit to search all kinds."`
 	Limit int    `json:"limit,omitempty" jsonschema:"max matches to return; default 20, hard cap 500"`
 }
 
@@ -23,7 +23,7 @@ type GetEntityInput struct {
 }
 
 type ListEntitiesInput struct {
-	Kind string `json:"kind" jsonschema:"required entity kind to enumerate: namespace | node | deployment | pod | container | endpoint | topic | database"`
+	Kind string `json:"kind" jsonschema:"required entity kind to enumerate: namespace | node | zone | region | deployment | pod | container | endpoint | topic | database"`
 }
 
 type GetSubgraphInput struct {

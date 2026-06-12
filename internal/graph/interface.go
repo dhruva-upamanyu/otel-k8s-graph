@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package graph models the graph of Kubernetes and OTel-derived
-// entities (namespaces, nodes, deployments, pods, containers, endpoints,
-// topics, databases) and the edges between them.
+// entities (namespaces, nodes, zones, regions, deployments, pods, containers,
+// endpoints, topics, databases) and the edges between them.
 //
 // The read surface is the Graph interface, implemented by RedisGraph
 // (redis.go) over a shared Redis instance. The write surface is the Writer
@@ -20,6 +20,8 @@ type Kind string
 const (
 	KindNamespace  Kind = "namespace"
 	KindNode       Kind = "node"
+	KindZone       Kind = "zone"
+	KindRegion     Kind = "region"
 	KindDeployment Kind = "deployment"
 	KindPod        Kind = "pod"
 	KindContainer  Kind = "container"

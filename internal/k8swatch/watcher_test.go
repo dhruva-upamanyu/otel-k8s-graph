@@ -143,6 +143,47 @@ func TestApplyUpdate_RemovedContainerIsDeleted(t *testing.T) {
 	}
 }
 
+func TestApplyUpdate_NodeZoneLabelRemoved(t *testing.T) {
+	// Old desired: node with zone label -> node entity + zone entity + 2 edges
+	oldNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a",
+			Labels: map[string]string{"topology.kubernetes.io/zone": "us-east1-b"},
+		},
+	}
+	newNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, // zone label removed
+	}
+
+	oldD := MapNode(oldNode)
+	newD := MapNode(newNode)
+
+	r := &recWriter{}
+	applyUpdate(r, oldD, newD)
+
+	// Zone/node edges must be removed
+	zoneContainsNode := "zone:us-east1-b|CONTAINS|node:node-a"
+	nodeRunsInZone := "node:node-a|RUNS_IN|zone:us-east1-b"
+	if !r.has(&r.remEdge, zoneContainsNode) {
+		t.Errorf("zone CONTAINS node edge not removed; remEdge=%v", r.remEdge)
+	}
+	if !r.has(&r.remEdge, nodeRunsInZone) {
+		t.Errorf("node RUNS_IN zone edge not removed; remEdge=%v", r.remEdge)
+	}
+
+	// Zone entity must NOT be deleted (it is a shared entity)
+	for _, d := range r.deletes {
+		if d == "zone:us-east1-b" {
+			t.Error("zone entity must not be deleted on label removal")
+		}
+	}
+
+	// Node entity must still be present (upserted in newD)
+	if !r.hasUpsert("node:node-a") {
+		t.Errorf("node entity not upserted; upserts=%v", r.upserts)
+	}
+}
+
 func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
