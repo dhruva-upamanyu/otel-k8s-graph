@@ -39,7 +39,8 @@ is self-contained:
 
 ```bash
 # 1. Build + push the three images (versioned + latest) and install the chart:
-REGISTRY=<your-registry> ./deploy.sh # add a registry here that your k8s cluster can access, the script will build and push the image, update the helm chart and run the helm install command 
+REGISTRY=<your-registry> ./deploy.sh # add a registry here that your k8s cluster can access,
+the script will build and push the image, update the helm chart and run the helm install command 
 
 # 2. Point your OTel Collector's span-metrics exporter at graph-otel:
 #      endpoint: graph-otel-otlp:4317
