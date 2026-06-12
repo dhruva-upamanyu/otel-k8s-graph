@@ -2,9 +2,9 @@
 
 // Package k8swatch derives the structural graph from Kubernetes
 // objects. This file holds the pure mapping from K8s objects (pods, nodes,
-// namespaces, deployments, statefulsets, daemonsets, jobs, cronjobs, hpas) to
-// graph entities and edges; the informer wiring and Redis writes live in
-// watcher.go.
+// namespaces, deployments, statefulsets, daemonsets, jobs, cronjobs, hpas,
+// scaledobjects, rollouts) to graph entities and edges; the informer wiring
+// and Redis writes live in watcher.go (CRD-backed mappers in dynamic.go).
 //
 // MapNode additionally derives zone and region entities from the well-known
 // topology labels (topology.kubernetes.io/zone|region), falling back to
@@ -238,6 +238,7 @@ func MapHPA(h *autoscalingv2.HorizontalPodAutoscaler) Desired {
 		tID := rolloutID(ns, targetName)
 		d.addEntity(tID, graph.KindRollout, targetName, nil)
 		d.addPair(id, graph.EdgeScales, tID, graph.EdgeScaledBy)
+	default:
 		// Any other kind: metadata already records it; no edge emitted.
 	}
 

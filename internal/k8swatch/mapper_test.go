@@ -11,8 +11,18 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 )
+
+func entityMeta(d Desired, id string) map[string]string {
+	for _, e := range d.Entities {
+		if e.ID == id {
+			return e.Metadata
+		}
+	}
+	return nil
+}
 
 func hasEntity(d Desired, id string, kind graph.Kind) bool {
 	for _, e := range d.Entities {
@@ -693,5 +703,201 @@ func TestMapHPA_KedaOwned(t *testing.T) {
 	}
 	if !hasEdge(d, depIDv, graph.EdgeScaledBy, hpaIDv) {
 		t.Error("missing deployment SCALED_BY hpa edge")
+	}
+}
+
+// ---- Rollout (unstructured) ----
+
+func rolloutUnstructured(ns, name string, labels, strategy map[string]any) *unstructured.Unstructured {
+	obj := map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Rollout",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": ns,
+		},
+	}
+	if labels != nil {
+		obj["metadata"].(map[string]any)["labels"] = labels
+	}
+	if strategy != nil {
+		obj["spec"] = map[string]any{"strategy": strategy}
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+func TestMapRolloutUnstructured_Canary(t *testing.T) {
+	u := rolloutUnstructured("prod", "web", map[string]any{"team": "platform"},
+		map[string]any{"canary": map[string]any{"steps": []any{}}})
+	d := MapRolloutUnstructured(u)
+	id := "rollout:prod/web"
+	if !hasEntity(d, id, graph.KindRollout) {
+		t.Fatalf("missing rollout entity; %+v", d.Entities)
+	}
+	md := entityMeta(d, id)
+	if md["rollout.strategy"] != "canary" {
+		t.Errorf("rollout.strategy = %q, want canary", md["rollout.strategy"])
+	}
+	if md["label.team"] != "platform" {
+		t.Errorf("label.team = %q, want platform", md["label.team"])
+	}
+}
+
+func TestMapRolloutUnstructured_BlueGreen(t *testing.T) {
+	u := rolloutUnstructured("prod", "web", nil,
+		map[string]any{"blueGreen": map[string]any{"activeService": "web-active"}})
+	d := MapRolloutUnstructured(u)
+	md := entityMeta(d, "rollout:prod/web")
+	if md["rollout.strategy"] != "blueGreen" {
+		t.Errorf("rollout.strategy = %q, want blueGreen", md["rollout.strategy"])
+	}
+}
+
+func TestMapRolloutUnstructured_NoStrategy(t *testing.T) {
+	u := rolloutUnstructured("prod", "web", nil, nil)
+	d := MapRolloutUnstructured(u)
+	id := "rollout:prod/web"
+	if !hasEntity(d, id, graph.KindRollout) {
+		t.Fatalf("missing rollout entity")
+	}
+	md := entityMeta(d, id)
+	if _, ok := md["rollout.strategy"]; ok {
+		t.Errorf("rollout.strategy should be absent, got %q", md["rollout.strategy"])
+	}
+}
+
+// ---- ScaledObject (unstructured) ----
+
+func scaledObjectUnstructured(ns, name string, spec map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "keda.sh/v1alpha1",
+		"kind":       "ScaledObject",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": ns,
+			"labels":    map[string]any{"app": "consumer"},
+		},
+		"spec": spec,
+	}}
+}
+
+func TestMapScaledObjectUnstructured_Full(t *testing.T) {
+	spec := map[string]any{
+		"scaleTargetRef":  map[string]any{"kind": "Deployment", "name": "worker"},
+		"minReplicaCount": int64(1),
+		"maxReplicaCount": int64(20),
+		"triggers": []any{
+			map[string]any{"type": "cpu"},
+			map[string]any{"type": "kafka"},
+		},
+		"advanced": map[string]any{
+			"horizontalPodAutoscalerConfig": map[string]any{
+				"behavior": map[string]any{
+					"scaleDown": map[string]any{"stabilizationWindowSeconds": int64(300)},
+				},
+			},
+		},
+	}
+	u := scaledObjectUnstructured("prod", "worker-so", spec)
+	d := MapScaledObjectUnstructured(u)
+
+	soID := "scaledobject:prod/worker-so"
+	depID := "deployment:prod/worker"
+	if !hasEntity(d, soID, graph.KindScaledObject) {
+		t.Fatal("missing scaledobject entity")
+	}
+	if !hasEntity(d, depID, graph.KindDeployment) {
+		t.Error("missing deployment target entity")
+	}
+	if !hasEdge(d, soID, graph.EdgeScales, depID) {
+		t.Error("missing SCALES edge")
+	}
+	if !hasEdge(d, depID, graph.EdgeScaledBy, soID) {
+		t.Error("missing SCALED_BY edge")
+	}
+	md := entityMeta(d, soID)
+	if md["keda.target.kind"] != "Deployment" {
+		t.Errorf("keda.target.kind = %q", md["keda.target.kind"])
+	}
+	if md["keda.target.name"] != "worker" {
+		t.Errorf("keda.target.name = %q", md["keda.target.name"])
+	}
+	if md["keda.min_replicas"] != "1" {
+		t.Errorf("keda.min_replicas = %q, want 1", md["keda.min_replicas"])
+	}
+	if md["keda.max_replicas"] != "20" {
+		t.Errorf("keda.max_replicas = %q, want 20", md["keda.max_replicas"])
+	}
+	if md["keda.triggers"] != "cpu,kafka" {
+		t.Errorf("keda.triggers = %q, want cpu,kafka", md["keda.triggers"])
+	}
+	want := `{"scaleDown":{"stabilizationWindowSeconds":300}}`
+	if md["keda.scaling_policy"] != want {
+		t.Errorf("keda.scaling_policy = %q, want %q", md["keda.scaling_policy"], want)
+	}
+	if md["label.app"] != "consumer" {
+		t.Errorf("label.app = %q, want consumer", md["label.app"])
+	}
+}
+
+func TestMapScaledObjectUnstructured_DefaultKind(t *testing.T) {
+	spec := map[string]any{
+		"scaleTargetRef": map[string]any{"name": "worker"},
+	}
+	u := scaledObjectUnstructured("prod", "worker-so", spec)
+	d := MapScaledObjectUnstructured(u)
+	soID := "scaledobject:prod/worker-so"
+	depID := "deployment:prod/worker"
+	md := entityMeta(d, soID)
+	if md["keda.target.kind"] != "Deployment" {
+		t.Errorf("keda.target.kind = %q, want Deployment (default)", md["keda.target.kind"])
+	}
+	if !hasEdge(d, soID, graph.EdgeScales, depID) {
+		t.Error("missing SCALES edge for defaulted kind")
+	}
+}
+
+func TestMapScaledObjectUnstructured_MinimalNoTarget(t *testing.T) {
+	spec := map[string]any{}
+	u := scaledObjectUnstructured("prod", "worker-so", spec)
+	d := MapScaledObjectUnstructured(u)
+	soID := "scaledobject:prod/worker-so"
+	if !hasEntity(d, soID, graph.KindScaledObject) {
+		t.Fatal("missing scaledobject entity")
+	}
+	if len(d.Edges) != 0 {
+		t.Errorf("expected no edges, got %+v", d.Edges)
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected only the scaledobject entity, got %+v", d.Entities)
+	}
+	md := entityMeta(d, soID)
+	if _, ok := md["keda.target.kind"]; ok {
+		t.Error("keda.target.kind should be absent without a target name")
+	}
+	if _, ok := md["keda.target.name"]; ok {
+		t.Error("keda.target.name should be absent without a target name")
+	}
+}
+
+func TestMapScaledObjectUnstructured_UnmodeledKind(t *testing.T) {
+	spec := map[string]any{
+		"scaleTargetRef": map[string]any{"kind": "CustomThing", "name": "thing"},
+	}
+	u := scaledObjectUnstructured("prod", "worker-so", spec)
+	d := MapScaledObjectUnstructured(u)
+	soID := "scaledobject:prod/worker-so"
+	if len(d.Edges) != 0 {
+		t.Errorf("expected no edges for unmodeled kind, got %+v", d.Edges)
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected only the scaledobject entity, got %+v", d.Entities)
+	}
+	md := entityMeta(d, soID)
+	if md["keda.target.kind"] != "CustomThing" {
+		t.Errorf("keda.target.kind = %q, want CustomThing", md["keda.target.kind"])
+	}
+	if md["keda.target.name"] != "thing" {
+		t.Errorf("keda.target.name = %q, want thing", md["keda.target.name"])
 	}
 }

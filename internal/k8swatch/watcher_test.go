@@ -13,8 +13,93 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	discoveryfake "k8s.io/client-go/discovery/fake"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
+
+func fakeDiscovery(resources ...*metav1.APIResourceList) *discoveryfake.FakeDiscovery {
+	return &discoveryfake.FakeDiscovery{Fake: &clienttesting.Fake{Resources: resources}}
+}
+
+func TestCRDAvailable(t *testing.T) {
+	disc := fakeDiscovery(&metav1.APIResourceList{
+		GroupVersion: "argoproj.io/v1alpha1",
+		APIResources: []metav1.APIResource{{Name: "rollouts", Kind: "Rollout"}},
+	})
+	if !crdAvailable(disc, rolloutGVR) {
+		t.Error("rollouts should be reported available")
+	}
+	// Group/version present but resource absent.
+	if crdAvailable(disc, scaledObjectGVR) {
+		t.Error("scaledobjects should be reported unavailable (group not served)")
+	}
+	// Group/version itself absent -> discovery returns NotFound error.
+	emptyDisc := fakeDiscovery()
+	if crdAvailable(emptyDisc, rolloutGVR) {
+		t.Error("rollouts should be unavailable when group/version is not served")
+	}
+}
+
+func TestWatcher_DynamicInformerWritesRollout(t *testing.T) {
+	scheme := runtime.NewScheme()
+	rollout := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Rollout",
+		"metadata": map[string]any{
+			"name":      "web",
+			"namespace": "prod",
+		},
+		"spec": map[string]any{
+			"strategy": map[string]any{"canary": map[string]any{}},
+		},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
+		map[schema.GroupVersionResource]string{
+			rolloutGVR:      "RolloutList",
+			scaledObjectGVR: "ScaledObjectList",
+		}, rollout)
+	disc := fakeDiscovery(&metav1.APIResourceList{
+		GroupVersion: "argoproj.io/v1alpha1",
+		APIResources: []metav1.APIResource{{Name: "rollouts", Kind: "Rollout"}},
+	})
+
+	client := fake.NewSimpleClientset()
+	r := &recWriter{}
+	wt := NewWatcher(client, dyn, disc, r, 0, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wt.Run(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.hasUpsert("rollout:prod/web") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	if !r.hasUpsert("rollout:prod/web") {
+		t.Fatalf("rollout entity not written; upserts=%v", r.snapshotUpserts())
+	}
+}
+
+func TestNewWatcher_NilDynamicNoPanic(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	if wt.dynFactory != nil {
+		t.Error("dynFactory should be nil when dyn/disc are nil")
+	}
+	// Run should not panic and should exit when ctx is cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	go wt.Run(ctx)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+}
 
 // recWriter records calls for assertions. It is written by informer
 // goroutines and read by the test goroutine, so all access is mutex-guarded.
@@ -200,7 +285,7 @@ func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 	}
 	client := fake.NewSimpleClientset(pod, rs)
 	r := &recWriter{}
-	wt := NewWatcher(client, r, 0, nil)
+	wt := NewWatcher(client, nil, nil, r, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wt.Run(ctx)
@@ -229,7 +314,7 @@ func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 func newWatcherWithRS(t *testing.T, rs *appsv1.ReplicaSet) *Watcher {
 	t.Helper()
 	client := fake.NewSimpleClientset(rs)
-	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
 	// Sync the RS lister manually by starting & waiting for cache sync.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -292,7 +377,7 @@ func TestOwnerForPod_PodToReplicaSetToRollout(t *testing.T) {
 
 func TestOwnerForPod_DirectStatefulSetRef(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pg-0", Namespace: "db",
@@ -313,7 +398,7 @@ func TestOwnerForPod_DirectStatefulSetRef(t *testing.T) {
 
 func TestOwnerForPod_DirectDaemonSetRef(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "fluentd-abc", Namespace: "logging",
@@ -334,7 +419,7 @@ func TestOwnerForPod_DirectDaemonSetRef(t *testing.T) {
 
 func TestOwnerForPod_DirectJobRef(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "migrate-xyz", Namespace: "default",
@@ -355,7 +440,7 @@ func TestOwnerForPod_DirectJobRef(t *testing.T) {
 
 func TestOwnerForPod_NoOwner(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "standalone", Namespace: "default"},
 	}

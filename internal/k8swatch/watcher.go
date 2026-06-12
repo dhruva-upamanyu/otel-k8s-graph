@@ -12,6 +12,12 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -95,16 +101,23 @@ func indexEdges(edges []DesiredEdge) map[string]DesiredEdge {
 
 // Watcher wires SharedInformers to the writer.
 type Watcher struct {
-	factory  informers.SharedInformerFactory
-	rsLister appslisters.ReplicaSetLister
-	podInf   cache.SharedIndexInformer
-	w        entityWriter
-	logger   *slog.Logger
+	factory    informers.SharedInformerFactory
+	dynFactory dynamicinformer.DynamicSharedInformerFactory // nil when no CRDs wired
+	rsLister   appslisters.ReplicaSetLister
+	podInf     cache.SharedIndexInformer
+	w          entityWriter
+	logger     *slog.Logger
 }
 
 // NewWatcher builds informers for the structural resources. resync drives
 // periodic re-delivery (self-heal). Handlers write through w.
-func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duration, logger *slog.Logger) *Watcher {
+//
+// dyn and disc enable dynamic informers for CRD-backed entities (Argo
+// Rollouts, KEDA ScaledObjects). Either may be nil — in that case (tests, or
+// callers that do not need CRD entities) dynamic informers are skipped
+// entirely and only the typed informers run. When both are non-nil, each CRD
+// is wired only if discovery reports its resource as served by the cluster.
+func NewWatcher(client kubernetes.Interface, dyn dynamic.Interface, disc discovery.DiscoveryInterface, w entityWriter, resync time.Duration, logger *slog.Logger) *Watcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -179,7 +192,48 @@ func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duratio
 	// ReplicaSets are watched only to resolve pod->owner; no handlers.
 	// Referenced here so the factory starts and syncs the informer.
 	f.Apps().V1().ReplicaSets().Informer()
+
+	wt.registerDynamic(dyn, disc, resync)
 	return wt
+}
+
+// registerDynamic wires dynamic informers for CRD-backed entities (rollouts,
+// scaledobjects) when both a dynamic client and discovery interface are
+// supplied. CRDs that discovery does not advertise are skipped with a log
+// line; a CRD installed later requires a restart (matching the typed
+// informers' static set). All wired GVRs share one informer factory.
+func (wt *Watcher) registerDynamic(dyn dynamic.Interface, disc discovery.DiscoveryInterface, resync time.Duration) {
+	if dyn == nil || disc == nil {
+		return
+	}
+	type crd struct {
+		gvr   schema.GroupVersionResource
+		mapFn func(*unstructured.Unstructured) Desired
+	}
+	crds := []crd{
+		{rolloutGVR, MapRolloutUnstructured},
+		{scaledObjectGVR, MapScaledObjectUnstructured},
+	}
+	for _, c := range crds {
+		if !crdAvailable(disc, c.gvr) {
+			wt.logger.Info("graph-k8s: CRD not available, skipping",
+				slog.String("resource", c.gvr.String()))
+			continue
+		}
+		if wt.dynFactory == nil {
+			wt.dynFactory = dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+				dyn, resync, metav1.NamespaceAll, nil)
+		}
+		inf := wt.dynFactory.ForResource(c.gvr).Informer()
+		mapFn := c.mapFn
+		wt.registerSingle(inf, func(o any) (Desired, bool) {
+			u, ok := o.(*unstructured.Unstructured)
+			if !ok {
+				return Desired{}, false
+			}
+			return mapFn(u), true
+		})
+	}
 }
 
 // Run starts informers and blocks until ctx is done. The pod handler is
@@ -189,6 +243,10 @@ func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duratio
 func (wt *Watcher) Run(ctx context.Context) {
 	wt.factory.Start(ctx.Done())
 	wt.factory.WaitForCacheSync(ctx.Done())
+	if wt.dynFactory != nil {
+		wt.dynFactory.Start(ctx.Done())
+		wt.dynFactory.WaitForCacheSync(ctx.Done())
+	}
 	wt.logger.Info("graph-k8s: informer caches synced")
 	wt.registerPods(wt.podInf)
 	<-ctx.Done()
