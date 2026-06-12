@@ -223,3 +223,144 @@ func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 		t.Fatalf("deployment edge missing; addEdge=%v", r.snapshotAddEdges())
 	}
 }
+
+// ---- ownerForPod tests ----
+
+func newWatcherWithRS(t *testing.T, rs *appsv1.ReplicaSet) *Watcher {
+	t.Helper()
+	client := fake.NewSimpleClientset(rs)
+	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	// Sync the RS lister manually by starting & waiting for cache sync.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	wt.factory.Start(ctx.Done())
+	wt.factory.WaitForCacheSync(ctx.Done())
+	return wt
+}
+
+func TestOwnerForPod_PodToReplicaSetToDeployment(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "auth-rs", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "auth"}},
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "auth-1", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "auth-rs"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != deploymentID("default", "auth") {
+		t.Errorf("id = %q, want %q", id, deploymentID("default", "auth"))
+	}
+	if name != "auth" {
+		t.Errorf("name = %q, want auth", name)
+	}
+	if kind != graph.KindDeployment {
+		t.Errorf("kind = %q, want deployment", kind)
+	}
+}
+
+func TestOwnerForPod_PodToReplicaSetToRollout(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-rs", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web-rollout"}},
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-1", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != rolloutID("default", "web-rollout") {
+		t.Errorf("id = %q, want %q", id, rolloutID("default", "web-rollout"))
+	}
+	if name != "web-rollout" {
+		t.Errorf("name = %q, want web-rollout", name)
+	}
+	if kind != graph.KindRollout {
+		t.Errorf("kind = %q, want rollout", kind)
+	}
+}
+
+func TestOwnerForPod_DirectStatefulSetRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pg-0", Namespace: "db",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "postgres"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != statefulSetID("db", "postgres") {
+		t.Errorf("id = %q, want %q", id, statefulSetID("db", "postgres"))
+	}
+	if name != "postgres" {
+		t.Errorf("name = %q, want postgres", name)
+	}
+	if kind != graph.KindStatefulSet {
+		t.Errorf("kind = %q, want statefulset", kind)
+	}
+}
+
+func TestOwnerForPod_DirectDaemonSetRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "fluentd-abc", Namespace: "logging",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "fluentd"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != daemonSetID("logging", "fluentd") {
+		t.Errorf("id = %q, want %q", id, daemonSetID("logging", "fluentd"))
+	}
+	if name != "fluentd" {
+		t.Errorf("name = %q, want fluentd", name)
+	}
+	if kind != graph.KindDaemonSet {
+		t.Errorf("kind = %q, want daemonset", kind)
+	}
+}
+
+func TestOwnerForPod_DirectJobRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "migrate-xyz", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Job", Name: "migrate-db"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != jobID("default", "migrate-db") {
+		t.Errorf("id = %q, want %q", id, jobID("default", "migrate-db"))
+	}
+	if name != "migrate-db" {
+		t.Errorf("name = %q, want migrate-db", name)
+	}
+	if kind != graph.KindJob {
+		t.Errorf("kind = %q, want job", kind)
+	}
+}
+
+func TestOwnerForPod_NoOwner(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "standalone", Namespace: "default"},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != "" || name != "" || kind != "" {
+		t.Errorf("expected no owner, got id=%q name=%q kind=%q", id, name, kind)
+	}
+}

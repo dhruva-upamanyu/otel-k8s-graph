@@ -2,8 +2,8 @@
 
 // Package k8swatch derives the structural graph from Kubernetes
 // objects. This file holds the pure mapping from K8s objects (pods, nodes,
-// namespaces, deployments) to graph entities and edges; the informer
-// wiring and Redis writes live in watcher.go.
+// namespaces, deployments, statefulsets, daemonsets, jobs, cronjobs) to graph
+// entities and edges; the informer wiring and Redis writes live in watcher.go.
 //
 // MapNode additionally derives zone and region entities from the well-known
 // topology labels (topology.kubernetes.io/zone|region), falling back to
@@ -14,6 +14,7 @@ package k8swatch
 import (
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -56,6 +57,11 @@ func nodeID(name string) string            { return "node:" + name }
 func zoneID(name string) string            { return "zone:" + name }
 func regionID(name string) string          { return "region:" + name }
 func deploymentID(ns, name string) string  { return "deployment:" + ns + "/" + name }
+func statefulSetID(ns, name string) string { return "statefulset:" + ns + "/" + name }
+func daemonSetID(ns, name string) string   { return "daemonset:" + ns + "/" + name }
+func jobID(ns, name string) string         { return "job:" + ns + "/" + name }
+func cronJobID(ns, name string) string     { return "cronjob:" + ns + "/" + name }
+func rolloutID(ns, name string) string     { return "rollout:" + ns + "/" + name }
 
 // nodeTopologyLabel returns the value of a topology label from node labels,
 // preferring the modern topology.kubernetes.io/<suffix> form and falling
@@ -67,8 +73,10 @@ func nodeTopologyLabel(labels map[string]string, suffix string) string {
 	return labels["failure-domain.beta.kubernetes.io/"+suffix]
 }
 
-// MapPod maps a Pod (deploymentName="" if it has no resolvable Deployment).
-func MapPod(p *corev1.Pod, deploymentName string) Desired {
+// MapPod maps a Pod. ownerID/ownerName/ownerKind identify the resolved owner
+// (deployment, statefulset, daemonset, job, rollout, …); pass empty strings
+// when the pod has no resolvable owner.
+func MapPod(p *corev1.Pod, ownerID, ownerName string, ownerKind graph.Kind) Desired {
 	var d Desired
 	id := podID(p.Namespace, p.Name)
 	d.addEntity(id, graph.KindPod, p.Name, podMetadata(p))
@@ -80,10 +88,9 @@ func MapPod(p *corev1.Pod, deploymentName string) Desired {
 		d.addEntity(nodeID(p.Spec.NodeName), graph.KindNode, p.Spec.NodeName, nil)
 		d.addPair(nodeID(p.Spec.NodeName), graph.EdgeContains, id, graph.EdgeRunsIn)
 	}
-	if deploymentName != "" {
-		depID := deploymentID(p.Namespace, deploymentName)
-		d.addEntity(depID, graph.KindDeployment, deploymentName, nil)
-		d.addPair(depID, graph.EdgeManages, id, graph.EdgeManagedBy)
+	if ownerID != "" {
+		d.addEntity(ownerID, ownerKind, ownerName, nil)
+		d.addPair(ownerID, graph.EdgeManages, id, graph.EdgeManagedBy)
 	}
 	for _, c := range p.Spec.Containers {
 		cID := containerID(p.Namespace, p.Name, c.Name)
@@ -93,8 +100,10 @@ func MapPod(p *corev1.Pod, deploymentName string) Desired {
 	return d
 }
 
-// MapNode / MapNamespace / MapDeployment map their objects to a single entity
-// each. Their edges to pods are emitted by MapPod (so pod churn maintains them).
+// MapNode / MapNamespace / MapDeployment / MapStatefulSet / MapDaemonSet /
+// MapJob / MapCronJob map their objects to a single entity each (plus
+// owner/child entities where applicable). Their edges to pods are emitted by
+// MapPod (so pod churn maintains them).
 //
 // MapNode also derives zone and region entities from the well-known topology
 // labels. A zone is only emitted when the zone label is present; a region is
@@ -133,6 +142,49 @@ func MapNamespace(n *corev1.Namespace) Desired {
 func MapDeployment(dep *appsv1.Deployment) Desired {
 	var d Desired
 	d.addEntity(deploymentID(dep.Namespace, dep.Name), graph.KindDeployment, dep.Name, labelMeta(dep.Labels))
+	return d
+}
+
+func MapStatefulSet(ss *appsv1.StatefulSet) Desired {
+	var d Desired
+	d.addEntity(statefulSetID(ss.Namespace, ss.Name), graph.KindStatefulSet, ss.Name, labelMeta(ss.Labels))
+	return d
+}
+
+func MapDaemonSet(ds *appsv1.DaemonSet) Desired {
+	var d Desired
+	d.addEntity(daemonSetID(ds.Namespace, ds.Name), graph.KindDaemonSet, ds.Name, labelMeta(ds.Labels))
+	return d
+}
+
+// MapJob maps a Job entity. If the Job has a CronJob ownerRef, the cronjob
+// entity is also upserted (with nil metadata) and MANAGES/MANAGED_BY edges
+// are added.
+func MapJob(j *batchv1.Job) Desired {
+	var d Desired
+	jID := jobID(j.Namespace, j.Name)
+	d.addEntity(jID, graph.KindJob, j.Name, labelMeta(j.Labels))
+	for _, ref := range j.OwnerReferences {
+		if ref.Kind == "CronJob" {
+			cID := cronJobID(j.Namespace, ref.Name)
+			d.addEntity(cID, graph.KindCronJob, ref.Name, nil)
+			d.addPair(cID, graph.EdgeManages, jID, graph.EdgeManagedBy)
+			break
+		}
+	}
+	return d
+}
+
+// MapCronJob maps a CronJob entity. Metadata includes labelMeta plus
+// "cronjob.schedule" set to the cron expression.
+func MapCronJob(cj *batchv1.CronJob) Desired {
+	var d Desired
+	md := labelMeta(cj.Labels)
+	if md == nil {
+		md = map[string]string{}
+	}
+	md["cronjob.schedule"] = cj.Spec.Schedule
+	d.addEntity(cronJobID(cj.Namespace, cj.Name), graph.KindCronJob, cj.Name, md)
 	return d
 }
 

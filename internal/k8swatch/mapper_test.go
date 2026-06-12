@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -36,7 +38,7 @@ func TestMapPod_EntitiesAndEdges(t *testing.T) {
 			Containers: []corev1.Container{{Name: "app", Image: "myorg/auth"}},
 		},
 	}
-	d := MapPod(pod, "auth-deploy")
+	d := MapPod(pod, deploymentID("default", "auth-deploy"), "auth-deploy", graph.KindDeployment)
 
 	podIDv := "pod:default/auth-1"
 	cID := "container:default/auth-1/app"
@@ -78,7 +80,7 @@ func TestMapPod_UnscheduledHasNoNodeEdge(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c"}}},
 	}
-	d := MapPod(pod, "")
+	d := MapPod(pod, "", "", "")
 	for _, e := range d.Edges {
 		if len(e.FromID) >= 5 && e.FromID[:5] == "node:" {
 			t.Fatalf("unscheduled pod should have no node edge (from %s)", e.FromID)
@@ -249,5 +251,209 @@ func TestMapNode_NoLabels(t *testing.T) {
 	}
 	if len(d.Edges) != 0 {
 		t.Errorf("expected no edges, got %+v", d.Edges)
+	}
+}
+
+// ---- StatefulSet ----
+
+func TestMapStatefulSet_EntityAndLabels(t *testing.T) {
+	ss := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "postgres", Namespace: "db",
+			Labels: map[string]string{"app": "postgres"},
+		},
+	}
+	d := MapStatefulSet(ss)
+	if !hasEntity(d, "statefulset:db/postgres", graph.KindStatefulSet) {
+		t.Error("missing statefulset entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity, got %d", len(d.Entities))
+	}
+	for _, e := range d.Entities {
+		if e.ID == "statefulset:db/postgres" {
+			if e.Metadata["label.app"] != "postgres" {
+				t.Errorf("label.app = %q, want postgres", e.Metadata["label.app"])
+			}
+		}
+	}
+}
+
+// ---- DaemonSet ----
+
+func TestMapDaemonSet_EntityAndLabels(t *testing.T) {
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "fluentd", Namespace: "logging",
+			Labels: map[string]string{"component": "logging"},
+		},
+	}
+	d := MapDaemonSet(ds)
+	if !hasEntity(d, "daemonset:logging/fluentd", graph.KindDaemonSet) {
+		t.Error("missing daemonset entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity, got %d", len(d.Entities))
+	}
+	for _, e := range d.Entities {
+		if e.ID == "daemonset:logging/fluentd" {
+			if e.Metadata["label.component"] != "logging" {
+				t.Errorf("label.component = %q, want logging", e.Metadata["label.component"])
+			}
+		}
+	}
+}
+
+// ---- CronJob ----
+
+func TestMapCronJob_EntityAndSchedule(t *testing.T) {
+	cj := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "daily-report", Namespace: "jobs",
+			Labels: map[string]string{"team": "data"},
+		},
+		Spec: batchv1.CronJobSpec{Schedule: "0 3 * * *"},
+	}
+	d := MapCronJob(cj)
+	if !hasEntity(d, "cronjob:jobs/daily-report", graph.KindCronJob) {
+		t.Error("missing cronjob entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity, got %d", len(d.Entities))
+	}
+	for _, e := range d.Entities {
+		if e.ID == "cronjob:jobs/daily-report" {
+			if e.Metadata["label.team"] != "data" {
+				t.Errorf("label.team = %q, want data", e.Metadata["label.team"])
+			}
+			if e.Metadata["cronjob.schedule"] != "0 3 * * *" {
+				t.Errorf("cronjob.schedule = %q, want 0 3 * * *", e.Metadata["cronjob.schedule"])
+			}
+		}
+	}
+}
+
+// ---- Job ----
+
+func TestMapJob_NoOwner(t *testing.T) {
+	j := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "migrate-db", Namespace: "default",
+			Labels: map[string]string{"run": "migrate"},
+		},
+	}
+	d := MapJob(j)
+	if !hasEntity(d, "job:default/migrate-db", graph.KindJob) {
+		t.Error("missing job entity")
+	}
+	if len(d.Entities) != 1 {
+		t.Errorf("expected 1 entity (job only), got %d: %+v", len(d.Entities), d.Entities)
+	}
+	if len(d.Edges) != 0 {
+		t.Errorf("expected no edges, got %d: %+v", len(d.Edges), d.Edges)
+	}
+}
+
+func TestMapJob_WithCronJobOwner(t *testing.T) {
+	j := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "daily-report-1234", Namespace: "jobs",
+			Labels: map[string]string{"team": "data"},
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "CronJob", Name: "daily-report"},
+			},
+		},
+	}
+	d := MapJob(j)
+	jobIDv := "job:jobs/daily-report-1234"
+	cronIDv := "cronjob:jobs/daily-report"
+	if !hasEntity(d, jobIDv, graph.KindJob) {
+		t.Error("missing job entity")
+	}
+	if !hasEntity(d, cronIDv, graph.KindCronJob) {
+		t.Error("missing cronjob entity")
+	}
+	if !hasEdge(d, cronIDv, graph.EdgeManages, jobIDv) {
+		t.Error("missing cronjob MANAGES job edge")
+	}
+	if !hasEdge(d, jobIDv, graph.EdgeManagedBy, cronIDv) {
+		t.Error("missing job MANAGED_BY cronjob edge")
+	}
+}
+
+// ---- MapPod with new owner kinds ----
+
+func TestMapPod_StatefulSetOwner(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pg-0", Namespace: "db"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pg"}}},
+	}
+	ssID := statefulSetID("db", "postgres")
+	d := MapPod(pod, ssID, "postgres", graph.KindStatefulSet)
+
+	podIDv := "pod:db/pg-0"
+	if !hasEntity(d, ssID, graph.KindStatefulSet) {
+		t.Error("missing statefulset entity")
+	}
+	if !hasEdge(d, ssID, graph.EdgeManages, podIDv) {
+		t.Error("missing statefulset MANAGES pod edge")
+	}
+	if !hasEdge(d, podIDv, graph.EdgeManagedBy, ssID) {
+		t.Error("missing pod MANAGED_BY statefulset edge")
+	}
+}
+
+func TestMapPod_DaemonSetOwner(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "fluentd-abc", Namespace: "logging"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "fluentd"}}},
+	}
+	dsID := daemonSetID("logging", "fluentd")
+	d := MapPod(pod, dsID, "fluentd", graph.KindDaemonSet)
+
+	podIDv := "pod:logging/fluentd-abc"
+	if !hasEntity(d, dsID, graph.KindDaemonSet) {
+		t.Error("missing daemonset entity")
+	}
+	if !hasEdge(d, dsID, graph.EdgeManages, podIDv) {
+		t.Error("missing daemonset MANAGES pod edge")
+	}
+	if !hasEdge(d, podIDv, graph.EdgeManagedBy, dsID) {
+		t.Error("missing pod MANAGED_BY daemonset edge")
+	}
+}
+
+func TestMapPod_JobOwner(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "migrate-xyz", Namespace: "default"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "migrate"}}},
+	}
+	jID := jobID("default", "migrate-db")
+	d := MapPod(pod, jID, "migrate-db", graph.KindJob)
+
+	podIDv := "pod:default/migrate-xyz"
+	if !hasEntity(d, jID, graph.KindJob) {
+		t.Error("missing job entity")
+	}
+	if !hasEdge(d, jID, graph.EdgeManages, podIDv) {
+		t.Error("missing job MANAGES pod edge")
+	}
+	if !hasEdge(d, podIDv, graph.EdgeManagedBy, jID) {
+		t.Error("missing pod MANAGED_BY job edge")
+	}
+}
+
+func TestMapPod_NoOwner(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "standalone", Namespace: "default"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+	}
+	d := MapPod(pod, "", "", "")
+	// No owner entity should be present
+	for _, e := range d.Entities {
+		switch e.Kind {
+		case graph.KindDeployment, graph.KindStatefulSet, graph.KindDaemonSet, graph.KindJob:
+			t.Errorf("unexpected owner entity %s (%s) when no owner provided", e.ID, e.Kind)
+		}
 	}
 }

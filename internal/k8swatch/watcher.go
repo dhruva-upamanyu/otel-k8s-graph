@@ -9,6 +9,7 @@ import (
 
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -115,8 +116,9 @@ func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duratio
 		logger:   logger,
 	}
 
-	// Node/namespace/deployment handlers map each object independently, so
-	// they can register up front and fire during the initial list.
+	// Node/namespace/deployment/statefulset/daemonset/job/cronjob handlers map
+	// each object independently, so they can register up front and fire during
+	// the initial list.
 	wt.registerSingle(f.Core().V1().Nodes().Informer(), func(o any) (Desired, bool) {
 		n, ok := o.(*corev1.Node)
 		if !ok {
@@ -138,7 +140,35 @@ func NewWatcher(client kubernetes.Interface, w entityWriter, resync time.Duratio
 		}
 		return MapDeployment(dep), true
 	})
-	// ReplicaSets are watched only to resolve pod->deployment; no handlers.
+	wt.registerSingle(f.Apps().V1().StatefulSets().Informer(), func(o any) (Desired, bool) {
+		ss, ok := o.(*appsv1.StatefulSet)
+		if !ok {
+			return Desired{}, false
+		}
+		return MapStatefulSet(ss), true
+	})
+	wt.registerSingle(f.Apps().V1().DaemonSets().Informer(), func(o any) (Desired, bool) {
+		ds, ok := o.(*appsv1.DaemonSet)
+		if !ok {
+			return Desired{}, false
+		}
+		return MapDaemonSet(ds), true
+	})
+	wt.registerSingle(f.Batch().V1().Jobs().Informer(), func(o any) (Desired, bool) {
+		j, ok := o.(*batchv1.Job)
+		if !ok {
+			return Desired{}, false
+		}
+		return MapJob(j), true
+	})
+	wt.registerSingle(f.Batch().V1().CronJobs().Informer(), func(o any) (Desired, bool) {
+		cj, ok := o.(*batchv1.CronJob)
+		if !ok {
+			return Desired{}, false
+		}
+		return MapCronJob(cj), true
+	})
+	// ReplicaSets are watched only to resolve pod->owner; no handlers.
 	// Referenced here so the factory starts and syncs the informer.
 	f.Apps().V1().ReplicaSets().Informer()
 	return wt
@@ -202,24 +232,40 @@ func (wt *Watcher) registerSingle(inf cache.SharedIndexInformer, mapFn func(any)
 }
 
 func (wt *Watcher) podDesired(p *corev1.Pod) Desired {
-	return MapPod(p, wt.deploymentForPod(p))
+	id, name, kind := wt.ownerForPod(p)
+	return MapPod(p, id, name, kind)
 }
 
-// deploymentForPod resolves pod -> ReplicaSet (ownerRef) -> Deployment (ownerRef).
-func (wt *Watcher) deploymentForPod(p *corev1.Pod) string {
+// ownerForPod resolves the controlling owner of a pod:
+//   - ownerRef Kind "ReplicaSet" → RS ownerRef Kind "Deployment" → deployment
+//   - ownerRef Kind "ReplicaSet" → RS ownerRef Kind "Rollout"     → rollout
+//   - ownerRef Kind "StatefulSet" → statefulset (direct)
+//   - ownerRef Kind "DaemonSet"   → daemonset (direct)
+//   - ownerRef Kind "Job"         → job (direct)
+//   - none → ("", "", "")
+func (wt *Watcher) ownerForPod(p *corev1.Pod) (id, name string, kind graph.Kind) {
 	for _, ref := range p.OwnerReferences {
-		if ref.Kind != "ReplicaSet" {
-			continue
-		}
-		rs, err := wt.rsLister.ReplicaSets(p.Namespace).Get(ref.Name)
-		if err != nil {
-			return ""
-		}
-		for _, rref := range rs.OwnerReferences {
-			if rref.Kind == "Deployment" {
-				return rref.Name
+		switch ref.Kind {
+		case "ReplicaSet":
+			rs, err := wt.rsLister.ReplicaSets(p.Namespace).Get(ref.Name)
+			if err != nil {
+				return "", "", ""
 			}
+			for _, rref := range rs.OwnerReferences {
+				switch rref.Kind {
+				case "Deployment":
+					return deploymentID(p.Namespace, rref.Name), rref.Name, graph.KindDeployment
+				case "Rollout":
+					return rolloutID(p.Namespace, rref.Name), rref.Name, graph.KindRollout
+				}
+			}
+		case "StatefulSet":
+			return statefulSetID(p.Namespace, ref.Name), ref.Name, graph.KindStatefulSet
+		case "DaemonSet":
+			return daemonSetID(p.Namespace, ref.Name), ref.Name, graph.KindDaemonSet
+		case "Job":
+			return jobID(p.Namespace, ref.Name), ref.Name, graph.KindJob
 		}
 	}
-	return ""
+	return "", "", ""
 }

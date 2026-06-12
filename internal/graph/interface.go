@@ -28,6 +28,15 @@ const (
 	KindEndpoint   Kind = "endpoint"
 	KindTopic      Kind = "topic"
 	KindDatabase   Kind = "database"
+
+	// K8s workload kinds
+	KindStatefulSet  Kind = "statefulset"
+	KindDaemonSet    Kind = "daemonset"
+	KindJob          Kind = "job"
+	KindCronJob      Kind = "cronjob"
+	KindRollout      Kind = "rollout"
+	KindHPA          Kind = "hpa"
+	KindScaledObject Kind = "scaledobject"
 )
 
 type EdgeKind string
@@ -47,6 +56,10 @@ const (
 	EdgeConsumedBy  EdgeKind = "CONSUMED_BY"
 	EdgeQueries     EdgeKind = "QUERIES"
 	EdgeQueriedBy   EdgeKind = "QUERIED_BY"
+
+	// Scaling edges (used by HPA/KEDA tasks)
+	EdgeScales   EdgeKind = "SCALES"
+	EdgeScaledBy EdgeKind = "SCALED_BY"
 )
 
 type Edge struct {
