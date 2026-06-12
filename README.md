@@ -49,6 +49,101 @@ Already have Redis? `--set redis.internal.enabled=false --set redis.host=...`.
 See the [chart README](helm/graph/README.md) for every value, including
 `existingSecret` for credentials and persistence for the bundled Redis.
 
+### Sample values: self-contained install
+
+The chart needs only a registry; everything else has working defaults
+(bundled Redis included):
+
+```yaml
+# graph-values.yaml
+image:
+  registry: <your-registry>   # e.g. ghcr.io/<you>
+
+# Optional: keep the graph across Redis restarts (default: rebuilt from
+# the K8s API and OTel metrics, so persistence is off).
+# redis:
+#   internal:
+#     persistence:
+#       enabled: true
+#       size: 1Gi
+```
+
+```bash
+helm upgrade --install graph helm/graph -f graph-values.yaml
+```
+
+### Sample values: OTel Collector feeding span metrics
+
+graph-otel consumes **span metrics**, not raw traces. If you don't already
+produce them, the [spanmetrics connector](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/connector/spanmetricsconnector)
+can derive them from your traces. Sample values for the upstream
+[opentelemetry-collector chart](https://github.com/open-telemetry/opentelemetry-helm-charts/tree/main/charts/opentelemetry-collector):
+
+```yaml
+# otel-collector-values.yaml
+mode: deployment
+
+image:
+  repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib
+
+# Adds the k8sattributes processor (+ RBAC) to every pipeline, so spans —
+# and therefore the span metrics — carry k8s.namespace.name / k8s.pod.name /
+# k8s.container.name. graph-otel needs these to attach relationships to the
+# right container.
+presets:
+  kubernetesAttributes:
+    enabled: true
+
+config:
+  connectors:
+    spanmetrics:
+      histogram:
+        explicit:
+          buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+      # The dimensions graph-otel reads to derive endpoints, databases and
+      # topics. (service.name, span.name and span.kind are included by
+      # default.)
+      dimensions:
+        - name: http.request.method
+        - name: http.route
+        - name: url.full        # client-side fallback when http.route is absent;
+                                # digits are templatized, but drop it if your URLs
+                                # are high-cardinality
+        - name: peer.service
+        - name: server.address
+        - name: server.port
+        - name: db.system
+      metrics_flush_interval: 15s
+
+  exporters:
+    otlp/graph:
+      # <service>.<namespace>: adjust if you installed the chart elsewhere
+      endpoint: graph-otel-otlp.default.svc.cluster.local:4317
+      tls:
+        insecure: true
+
+  service:
+    pipelines:
+      # Traces in (apps send OTLP to this collector) -> span metrics out.
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [spanmetrics]
+      metrics/graph:
+        receivers: [spanmetrics]
+        processors: [batch]
+        exporters: [otlp/graph]
+```
+
+```bash
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+  -f otel-collector-values.yaml
+```
+
+Already producing span metrics? Just add the `otlp/graph` exporter to your
+existing metrics pipeline.
+
 ## The graph
 
 **Entity kinds:** `namespace`, `node`, `deployment`, `pod`, `container`
