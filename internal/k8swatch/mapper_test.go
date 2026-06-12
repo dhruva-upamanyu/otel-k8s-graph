@@ -209,6 +209,9 @@ func TestMapNode_ModernLabelWinsOverLegacy(t *testing.T) {
 	if !hasEntity(d, "zone:modern-zone", graph.KindZone) {
 		t.Error("modern zone entity not found")
 	}
+	if !hasEntity(d, "region:modern-region", graph.KindRegion) {
+		t.Error("modern region entity not found")
+	}
 	for _, e := range d.Entities {
 		if e.ID == "zone:legacy-zone" {
 			t.Error("legacy zone entity must not be created when modern label present")
