@@ -4,8 +4,10 @@ A live **relationship graph** of a Kubernetes cluster: what runs where, and
 which service talks to what. Built from two sources, queryable by humans,
 scripts, and LLM agents.
 
-- **Cluster structure** — namespaces, nodes, zones, regions, deployments, pods, containers and
-  how they contain/manage each other — from the **Kubernetes API**.
+- **Cluster structure** — namespaces, nodes, zones, regions, workloads
+  (deployments, statefulsets, daemonsets, jobs, rollouts, …), autoscalers
+  (HPA, KEDA), pods and containers, and how they contain/manage/scale each
+  other — from the **Kubernetes API**.
 - **Service relationships** — which service calls which HTTP endpoint, queries
   which database, publishes to which topic — from **OTel span metrics**.
 
