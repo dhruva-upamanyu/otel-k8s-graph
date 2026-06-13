@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package graph models the graph of Kubernetes and OTel-derived
-// entities (namespaces, nodes, zones, regions, deployments, pods, containers,
+// entities (namespaces, nodes, zones, regions, deployments, statefulsets,
+// daemonsets, jobs, cronjobs, rollouts, hpas, scaledobjects, pods, containers,
 // endpoints, topics, databases) and the edges between them.
 //
 // The read surface is the Graph interface, implemented by RedisGraph
@@ -28,6 +29,15 @@ const (
 	KindEndpoint   Kind = "endpoint"
 	KindTopic      Kind = "topic"
 	KindDatabase   Kind = "database"
+
+	// K8s workload kinds
+	KindStatefulSet  Kind = "statefulset"
+	KindDaemonSet    Kind = "daemonset"
+	KindJob          Kind = "job"
+	KindCronJob      Kind = "cronjob"
+	KindRollout      Kind = "rollout"
+	KindHPA          Kind = "hpa"
+	KindScaledObject Kind = "scaledobject"
 )
 
 type EdgeKind string
@@ -47,6 +57,10 @@ const (
 	EdgeConsumedBy  EdgeKind = "CONSUMED_BY"
 	EdgeQueries     EdgeKind = "QUERIES"
 	EdgeQueriedBy   EdgeKind = "QUERIED_BY"
+
+	// Scaling edges (used by HPA/KEDA tasks)
+	EdgeScales   EdgeKind = "SCALES"
+	EdgeScaledBy EdgeKind = "SCALED_BY"
 )
 
 type Edge struct {

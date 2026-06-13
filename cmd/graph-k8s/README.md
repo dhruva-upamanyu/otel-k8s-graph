@@ -1,8 +1,8 @@
 # graph-k8s
 
 Watches the Kubernetes API and writes the **k8s derived** graph to Redis:
-`namespace`, `node`, `zone`, `region`, `deployment`, `pod`, `container` entities and the
-`CONTAINS`/`RUNS_IN`/`MANAGES`/`MANAGED_BY` edges between them.
+`namespace`, `node`, `zone`, `region`, `deployment`, `statefulset`, `daemonset`, `job`, `cronjob`, `rollout`, `pod`, `container`, `hpa`, `scaledobject` entities and the
+`CONTAINS`/`RUNS_IN`/`MANAGES`/`MANAGED_BY`/`SCALES`/`SCALED_BY` edges between them.
 
 It is the **data source** for k8s derived entities — it creates and deletes
 these entities based only on Kubernetes events.
@@ -10,9 +10,11 @@ these entities based only on Kubernetes events.
 ## How it works
 
 1. **Informers.** Uses client-go `SharedInformerFactory` to watch pods, nodes,
-   namespaces, deployments, and replicasets. Each informer keeps an in-memory
-   cache and delivers add/update/delete events. This is a long-lived process
-   (one replica), not a polling loop.
+   namespaces, deployments, and replicasets; also watches apps (statefulsets, daemonsets),
+   batch (jobs, cronjobs), and autoscaling (HPAs). When the CRDs are present, it additionally
+   watches Argo Rollouts and KEDA ScaledObjects via dynamic informers (discovery-gated). Each
+   informer keeps an in-memory cache and delivers add/update/delete events. This is a long-lived
+   process (one replica), not a polling loop.
 2. **Map.** A pure mapper turns each object into a `Desired` set of
    entities + edges (e.g. a pod yields its pod and container entities, plus
    namespace/node/deployment containment edges; a node with topology labels
@@ -47,8 +49,11 @@ these entities based only on Kubernetes events.
 ## RBAC
 
 Needs cluster-wide read access (`get`/`list`/`watch`) to: `pods`, `nodes`,
-`namespaces` (core) and `deployments`, `replicasets` (apps). The Helm chart
-ships the ServiceAccount + ClusterRole + ClusterRoleBinding.
+`namespaces` (core); `deployments`, `replicasets`, `statefulsets`, `daemonsets` (apps);
+`jobs`, `cronjobs` (batch); `horizontalpodautoscalers` (autoscaling);
+`rollouts` (argoproj.io — skipped if CRD absent);
+`scaledobjects` (keda.sh — skipped if CRD absent).
+The Helm chart ships the ServiceAccount + ClusterRole + ClusterRoleBinding.
 
 
 ## Build & run

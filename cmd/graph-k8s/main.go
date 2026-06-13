@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -60,12 +62,22 @@ func main() {
 		logger.Error("kubernetes client failed", slog.Any("err", err))
 		os.Exit(1)
 	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		logger.Error("dynamic client failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+	disc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		logger.Error("discovery client failed", slog.Any("err", err))
+		os.Exit(1)
+	}
 
 	writer := graph.NewRedisWriter(rdb, prefix, batchSize, batchInterval, logger)
 	writer.Run()
 	defer writer.Close()
 
-	watcher := k8swatch.NewWatcher(client, writer, resync, logger)
+	watcher := k8swatch.NewWatcher(client, dyn, disc, writer, resync, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -15,21 +15,24 @@ import (
 const instructions = `You are exploring Kubernetes microservices based environment using a graph built from Kubernetes API state (cluster structure) and OTel span metrics (service relationships).
 
 The graph has these entity kinds:
-- namespace, node, zone, region, deployment, pod, container — Kubernetes structure
+- namespace, node, zone, region — cluster structure
+- deployment, statefulset, daemonset, job, cronjob, rollout, pod, container — workloads
+- hpa, scaledobject — autoscalers
 - endpoint — an HTTP route served by some service (id: endpoint:<service>/<METHOD>/<route>)
 - topic — a messaging destination (id: topic:<name>)
 - database — a queried datastore (id: database:<system>/<host>[:<port>])
 
 Edge kinds and their meaning:
 - CONTAINS / RUNS_IN — structural hierarchy (namespace contains pod, pod contains container, node contains pod, zone contains node, region contains zone)
-- MANAGES / MANAGED_BY — Deployment controller relationship
+- MANAGES / MANAGED_BY — controller owns workload/pods (deployment, statefulset, daemonset, job, rollout -> pods; cronjob -> jobs; scaledobject -> its keda-owned hpa)
+- SCALES / SCALED_BY — autoscaler targets a workload (hpa or scaledobject -> deployment/statefulset/rollout)
 - EXPOSES / EXPOSED_BY — server side of an HTTP endpoint
 - CALLS / CALLED_BY — client side of an HTTP endpoint (container -> endpoint)
 - PUBLISHES / PUBLISHED_BY, CONSUMES / CONSUMED_BY — Kafka/messaging
 - QUERIES / QUERIED_BY — database; each edge carries an "action" field with the SQL operation or command (e.g. "SELECT auth.users")
 
 Identifier conventions:
-- Pod/container/deployment IDs are namespace-qualified: pod:<ns>/<name>, container:<ns>/<pod>/<name>
+- pod:<ns>/<name>, container:<ns>/<pod>/<name>, and similarly statefulset/daemonset/job/cronjob/rollout/hpa/scaledobject:<ns>/<name>
 
 Recommended workflow:
 1. If the user names something approximately, use the "search" tool first (case-insensitive, matches IDs, names, metadata, and edge actions).

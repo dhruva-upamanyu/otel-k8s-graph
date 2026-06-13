@@ -4,8 +4,10 @@ A live **relationship graph** of a Kubernetes cluster: what runs where, and
 which service talks to what. Built from two sources, queryable by humans,
 scripts, and LLM agents.
 
-- **Cluster structure** — namespaces, nodes, zones, regions, deployments, pods, containers and
-  how they contain/manage each other — from the **Kubernetes API**.
+- **Cluster structure** — namespaces, nodes, zones, regions, workloads
+  (deployments, statefulsets, daemonsets, jobs, rollouts, …), autoscalers
+  (HPA, KEDA), pods and containers, and how they contain/manage/scale each
+  other — from the **Kubernetes API**.
 - **Service relationships** — which service calls which HTTP endpoint, queries
   which database, publishes to which topic — from **OTel span metrics**.
 
@@ -150,9 +152,9 @@ existing metrics pipeline.
 
 ## The graph
 
-**Entity kinds:** `namespace`, `node`, `zone`, `region`, `deployment`, `pod`, `container` (K8s derived); `endpoint`, `topic`, `database` (span metrics derived).
+**Entity kinds:** `namespace`, `node`, `zone`, `region`, `deployment`, `statefulset`, `daemonset`, `job`, `cronjob`, `rollout`, `pod`, `container`, `hpa`, `scaledobject` (K8s derived); `endpoint`, `topic`, `database` (span metrics derived).
 
-**Edge kinds:** `CONTAINS`/`RUNS_IN`, `MANAGES`/`MANAGED_BY` (K8s derived);
+**Edge kinds:** `CONTAINS`/`RUNS_IN`, `MANAGES`/`MANAGED_BY`, `SCALES`/`SCALED_BY` (K8s derived);
 `EXPOSES`/`EXPOSED_BY`, `CALLS`/`CALLED_BY`, `PUBLISHES`/`PUBLISHED_BY`,
 `CONSUMES`/`CONSUMED_BY`, `QUERIES`/`QUERIED_BY` (span metrics derived). Edges
 are single-directional but have a counterpart edge in the store, and `QUERIES`
@@ -163,6 +165,8 @@ edges carry an `action` (the SQL/command).
 `database:<system>/<host>[:<port>]`, `topic:<name>`.
 
 **Zones & regions.** Nodes carrying the well-known `topology.kubernetes.io/zone` / `region` labels (or their legacy `failure-domain.beta.kubernetes.io` forms) produce `zone` and `region` entities: `region CONTAINS zone CONTAINS node`. Cross-zone questions — *"which services call auth-service from another zone?"* — become short graph walks: pod → node → zone on each side of a `CALLS` edge.
+
+**Workloads & autoscalers.** Beyond deployments, graph-k8s models `statefulset`, `daemonset`, `job`/`cronjob`, and Argo `rollout` (each `MANAGES` its pods), plus `hpa` and KEDA `scaledobject` autoscalers that `SCALES` a target workload. HPA replica bounds, KEDA triggers/scaling policy, and cron schedules are captured as metadata. The Argo and KEDA resources are CRDs — graph-k8s detects their absence and skips them, so it runs anywhere.
 
 ### Redis schema (prefix configurable, default `graph`)
 

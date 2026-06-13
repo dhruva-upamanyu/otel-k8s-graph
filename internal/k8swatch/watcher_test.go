@@ -13,8 +13,93 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	discoveryfake "k8s.io/client-go/discovery/fake"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
+
+func fakeDiscovery(resources ...*metav1.APIResourceList) *discoveryfake.FakeDiscovery {
+	return &discoveryfake.FakeDiscovery{Fake: &clienttesting.Fake{Resources: resources}}
+}
+
+func TestCRDAvailable(t *testing.T) {
+	disc := fakeDiscovery(&metav1.APIResourceList{
+		GroupVersion: "argoproj.io/v1alpha1",
+		APIResources: []metav1.APIResource{{Name: "rollouts", Kind: "Rollout"}},
+	})
+	if !crdAvailable(disc, rolloutGVR) {
+		t.Error("rollouts should be reported available")
+	}
+	// Group/version present but resource absent.
+	if crdAvailable(disc, scaledObjectGVR) {
+		t.Error("scaledobjects should be reported unavailable (group not served)")
+	}
+	// Group/version itself absent -> discovery returns NotFound error.
+	emptyDisc := fakeDiscovery()
+	if crdAvailable(emptyDisc, rolloutGVR) {
+		t.Error("rollouts should be unavailable when group/version is not served")
+	}
+}
+
+func TestWatcher_DynamicInformerWritesRollout(t *testing.T) {
+	scheme := runtime.NewScheme()
+	rollout := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Rollout",
+		"metadata": map[string]any{
+			"name":      "web",
+			"namespace": "prod",
+		},
+		"spec": map[string]any{
+			"strategy": map[string]any{"canary": map[string]any{}},
+		},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
+		map[schema.GroupVersionResource]string{
+			rolloutGVR:      "RolloutList",
+			scaledObjectGVR: "ScaledObjectList",
+		}, rollout)
+	disc := fakeDiscovery(&metav1.APIResourceList{
+		GroupVersion: "argoproj.io/v1alpha1",
+		APIResources: []metav1.APIResource{{Name: "rollouts", Kind: "Rollout"}},
+	})
+
+	client := fake.NewSimpleClientset()
+	r := &recWriter{}
+	wt := NewWatcher(client, dyn, disc, r, 0, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wt.Run(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.hasUpsert("rollout:prod/web") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	if !r.hasUpsert("rollout:prod/web") {
+		t.Fatalf("rollout entity not written; upserts=%v", r.snapshotUpserts())
+	}
+}
+
+func TestNewWatcher_NilDynamicNoPanic(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	if wt.dynFactory != nil {
+		t.Error("dynFactory should be nil when dyn/disc are nil")
+	}
+	// Run should not panic and should exit when ctx is cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	go wt.Run(ctx)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+}
 
 // recWriter records calls for assertions. It is written by informer
 // goroutines and read by the test goroutine, so all access is mutex-guarded.
@@ -200,7 +285,7 @@ func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 	}
 	client := fake.NewSimpleClientset(pod, rs)
 	r := &recWriter{}
-	wt := NewWatcher(client, r, 0, nil)
+	wt := NewWatcher(client, nil, nil, r, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wt.Run(ctx)
@@ -221,5 +306,172 @@ func TestWatcher_InitialSyncWritesEntities(t *testing.T) {
 	}
 	if !r.hasAddEdge("deployment:default/auth|MANAGES|pod:default/auth-1") {
 		t.Fatalf("deployment edge missing; addEdge=%v", r.snapshotAddEdges())
+	}
+}
+
+// ---- ownerForPod tests ----
+
+func newWatcherWithRS(t *testing.T, rs *appsv1.ReplicaSet) *Watcher {
+	t.Helper()
+	client := fake.NewSimpleClientset(rs)
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	// Sync the RS lister manually by starting & waiting for cache sync.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	wt.factory.Start(ctx.Done())
+	wt.factory.WaitForCacheSync(ctx.Done())
+	return wt
+}
+
+func TestOwnerForPod_PodToReplicaSetToDeployment(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "auth-rs", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "auth"}},
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "auth-1", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "auth-rs"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != deploymentID("default", "auth") {
+		t.Errorf("id = %q, want %q", id, deploymentID("default", "auth"))
+	}
+	if name != "auth" {
+		t.Errorf("name = %q, want auth", name)
+	}
+	if kind != graph.KindDeployment {
+		t.Errorf("kind = %q, want deployment", kind)
+	}
+}
+
+func TestOwnerForPod_PodToReplicaSetToRollout(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-rs", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Rollout", Name: "web-rollout"}},
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "web-1", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != rolloutID("default", "web-rollout") {
+		t.Errorf("id = %q, want %q", id, rolloutID("default", "web-rollout"))
+	}
+	if name != "web-rollout" {
+		t.Errorf("name = %q, want web-rollout", name)
+	}
+	if kind != graph.KindRollout {
+		t.Errorf("kind = %q, want rollout", kind)
+	}
+}
+
+func TestOwnerForPod_DirectStatefulSetRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pg-0", Namespace: "db",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "postgres"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != statefulSetID("db", "postgres") {
+		t.Errorf("id = %q, want %q", id, statefulSetID("db", "postgres"))
+	}
+	if name != "postgres" {
+		t.Errorf("name = %q, want postgres", name)
+	}
+	if kind != graph.KindStatefulSet {
+		t.Errorf("kind = %q, want statefulset", kind)
+	}
+}
+
+func TestOwnerForPod_DirectDaemonSetRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "fluentd-abc", Namespace: "logging",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet", Name: "fluentd"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != daemonSetID("logging", "fluentd") {
+		t.Errorf("id = %q, want %q", id, daemonSetID("logging", "fluentd"))
+	}
+	if name != "fluentd" {
+		t.Errorf("name = %q, want fluentd", name)
+	}
+	if kind != graph.KindDaemonSet {
+		t.Errorf("kind = %q, want daemonset", kind)
+	}
+}
+
+func TestOwnerForPod_DirectJobRef(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "migrate-xyz", Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "Job", Name: "migrate-db"}},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != jobID("default", "migrate-db") {
+		t.Errorf("id = %q, want %q", id, jobID("default", "migrate-db"))
+	}
+	if name != "migrate-db" {
+		t.Errorf("name = %q, want migrate-db", name)
+	}
+	if kind != graph.KindJob {
+		t.Errorf("kind = %q, want job", kind)
+	}
+}
+
+func TestOwnerForPod_NoOwner(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	wt := NewWatcher(client, nil, nil, &recWriter{}, 0, nil)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "standalone", Namespace: "default"},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != "" || name != "" || kind != "" {
+		t.Errorf("expected no owner, got id=%q name=%q kind=%q", id, name, kind)
+	}
+}
+
+// TestOwnerForPod_BareReplicaSet: RS exists in lister but has no ownerRefs.
+// ownerForPod must return empty ("", "", "") without panicking.
+func TestOwnerForPod_BareReplicaSet(t *testing.T) {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "bare-rs",
+			Namespace:       "default",
+			OwnerReferences: nil, // no owner
+		},
+	}
+	wt := newWatcherWithRS(t, rs)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bare-pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "bare-rs"},
+			},
+		},
+	}
+	id, name, kind := wt.ownerForPod(pod)
+	if id != "" || name != "" || kind != "" {
+		t.Errorf("bare RS: expected no owner, got id=%q name=%q kind=%q", id, name, kind)
 	}
 }
