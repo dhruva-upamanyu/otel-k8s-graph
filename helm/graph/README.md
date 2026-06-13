@@ -8,7 +8,7 @@ This chart deploys the three graph components:
 
 | Component | Role |
 |-----------|------|
-| **graph-k8s** | Watches the Kubernetes API and writes cluster structure (namespace/node/zone/region/deployment/pod/container) to Redis. Single authoritative writer. |
+| **graph-k8s** | Watches the Kubernetes API and writes cluster structure (namespace/node/zone/region/deployment/statefulset/daemonset/job/cronjob/rollout/pod/container + hpa/scaledobject autoscalers) to Redis. Single authoritative writer. |
 | **graph-otel** | Ingests OTel span metrics over gRPC and writes service relationships (endpoint/topic/database + CALLS/QUERIES/PUBLISHES/EXPOSES) to Redis. |
 | **graph-read** | Serves the read/query HTTP API from Redis. The same image also runs the MCP server locally as `graph-read mcp`. |
 

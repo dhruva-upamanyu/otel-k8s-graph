@@ -37,6 +37,9 @@ func crdAvailable(disc discovery.DiscoveryInterface, gvr schema.GroupVersionReso
 	if err != nil {
 		return false
 	}
+	if list == nil {
+		return false
+	}
 	for _, r := range list.APIResources {
 		if r.Name == gvr.Resource {
 			return true
