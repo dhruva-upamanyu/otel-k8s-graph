@@ -12,3 +12,6 @@ coverage.out
 
 # Helm packaging
 *.tgz
+
+# Local-only design docs (not published)
+docs/superpowers/
