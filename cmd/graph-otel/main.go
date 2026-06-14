@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/encoding/gzip" // register gzip decompressor for OTLP clients
 
@@ -23,20 +23,21 @@ import (
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/otlpreceiver"
 )
 
-// Command graph-otel ingests OTel span metrics over gRPC and derives the
+// Command graph-otel ingests OTel trace spans over gRPC and derives the
 // service-relationship graph (endpoint/topic/database entities + CALLS/
 // QUERIES/PUBLISHES/EXPOSES edges) into Redis. It is a pure writer: it
 // accumulates the discovered graph in an in-memory set (no Redis in the
 // request path), and a background flusher periodically writes the delta to
-// Redis. The query API lives in graph-read; this binary serves only
-// /healthz for k8s probes.
+// Redis. Raw spans are never persisted — each span is consumed to derive
+// relationships and then discarded. The query API lives in graph-read; this
+// binary serves only /healthz for k8s probes.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	listenAddr := envOrDefault("LISTEN_ADDR", ":8080")
 	grpcAddr := envOrDefault("GRPC_LISTEN_ADDR", ":4317")
 	// Max OTLP message the gRPC server accepts (decompressed). gRPC's default
-	// is 4 MiB; collectors batching high-cardinality metrics overflow it and
+	// is 4 MiB; collectors batching high-volume trace spans overflow it and
 	// drop items. Raise it and make it tunable.
 	grpcMaxRecvMiB := envInt(logger, "GRPC_MAX_RECV_MSG_MIB", 32)
 
@@ -78,15 +79,15 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// OTLP gRPC receiver: the sole ingest path.
+	// OTLP/gRPC TracesService receiver: the sole ingest path.
 	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		logger.Error("grpc listen failed", slog.Any("err", err))
 		os.Exit(1)
 	}
-	recv := otlpreceiver.New(logger)
+	recv := otlpreceiver.NewTrace(logger)
 	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(grpcMaxRecvMiB * 1024 * 1024))
-	pmetricotlp.RegisterGRPCServer(grpcSrv, recv)
+	ptraceotlp.RegisterGRPCServer(grpcSrv, recv)
 	go func() {
 		if err := grpcSrv.Serve(lis); err != nil {
 			logger.Error("grpc server crashed", slog.Any("err", err))
@@ -134,7 +135,7 @@ func main() {
 // runFlusher waits delay, then every interval expires stale entries (not seen
 // for ttl) and writes only the delta vs the previous flush to Redis, timing
 // each flush. Runs until ctx is canceled.
-func runFlusher(ctx context.Context, logger *slog.Logger, recv *otlpreceiver.Server, rdb *redis.Client, prefix string, delay, interval, ttl time.Duration) {
+func runFlusher(ctx context.Context, logger *slog.Logger, recv *otlpreceiver.TraceServer, rdb *redis.Client, prefix string, delay, interval, ttl time.Duration) {
 	logger.Info("redis flusher scheduled",
 		slog.Duration("initial_delay", delay), slog.Duration("interval", interval), slog.Duration("expiry_ttl", ttl))
 	select {

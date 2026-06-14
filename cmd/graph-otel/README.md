@@ -1,24 +1,25 @@
 # graph-otel
 
-Ingests **OTel span metrics** over OTLP/gRPC and writes the **span metric derived
+Ingests **OTel trace spans** over OTLP/gRPC and writes the **span-derived
 relationships and entities** to Redis: `endpoint`, `topic`, `database` entities and
 the `EXPOSES`/`CALLS`/`PUBLISHES`/`CONSUMES`/`QUERIES` edges between services and
-those resources.
+those resources. Raw spans are never stored — each span is consumed to derive
+relationships and then discarded.
 
 
 ## Data flow
 
 ```
 OTLP/gRPC  ->  receiver  ->  in-memory BatchWriteSet  ->  background flusher  ->  Redis
-(span        (derive       (deduped sets of            (delta vs previous,
- metrics)     relationships) entities + edges,           every interval)
+(trace       (derive       (deduped sets of            (delta vs previous,
+ spans)       relationships) entities + edges,           every interval)
                             stamped last-seen)
 ```
 
-1. **Receive.** Implements the OTLP `MetricsService`. Only datapoint/resource
-   *attributes* are read; the metric values are discarded (graph derivation depends on
-   attributes alone). gRPC decodes the request before the handler, so the hot
-   path is attribute extraction.
+1. **Receive.** Implements the OTLP `TracesService`. Each span's `span.kind`
+   (from `span.Kind()`), `span.name` (from `span.Name()`), and attributes are
+   read into a `Record`; the span itself is not retained. gRPC decodes the
+   request before the handler, so the hot path is attribute extraction.
 2. **Derive.** For each record it finds the emitting container/pod (the edge
    anchor) and derives any HTTP endpoint, messaging topic, or database it
    touches — templatizing high-cardinality values (e.g. `/orders/123` →
@@ -48,14 +49,21 @@ OTLP/gRPC  ->  receiver  ->  in-memory BatchWriteSet  ->  background flusher  ->
 
 ## Collector setup
 
-Point your OpenTelemetry Collector's **metrics** exporter (the spanmetrics
-output) at the OTLP service:
+Add an OTLP exporter to your OpenTelemetry Collector's **traces** pipeline,
+pointing at the OTLP service (no spanmetrics connector or metrics pipeline
+needed — graph-otel consumes spans directly):
 
 ```yaml
 exporters:
   otlp/graph:
     endpoint: graph-otel-otlp:4317
     tls: { insecure: true }
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp/graph]   # plus your existing trace exporters
 ```
 
 The richer the span attributes (`http.route`, `db.system`, `server.address`,

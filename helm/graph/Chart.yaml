@@ -1,7 +1,7 @@
 apiVersion: v2
 name: graph
 description: >-
-  Kubernetes + OTel relationship graph: graph-k8s (K8s API -> Redis structure writer), graph-otel (OTel span metrics -> Redis relationship writer), and graph-read (Redis -> HTTP query API; also the MCP server when run locally).
+  Kubernetes + OTel relationship graph: graph-k8s (K8s API -> Redis structure writer), graph-otel (OTel trace spans -> Redis relationship writer), and graph-read (Redis -> HTTP query API; also the MCP server when run locally).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
