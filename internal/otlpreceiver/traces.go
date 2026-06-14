@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/builder"
+	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/flows"
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 )
 
@@ -27,6 +28,9 @@ type TraceServer struct {
 	mu     sync.Mutex
 	set    *graph.BatchWriteSet
 	logger *slog.Logger
+	// flowSink, when non-nil, receives a deep-copied SpanRecord per span for the
+	// trace-flow assembler. nil keeps Export to the entity-graph path only.
+	flowSink func(flows.SpanRecord)
 }
 
 func NewTrace(logger *slog.Logger) *TraceServer {
@@ -38,6 +42,10 @@ func NewTrace(logger *slog.Logger) *TraceServer {
 		logger: logger,
 	}
 }
+
+// SetFlowSink attaches a secondary consumer that receives a SpanRecord per span.
+// Not safe to call concurrently with Export; set it once at startup.
+func (s *TraceServer) SetFlowSink(fn func(flows.SpanRecord)) { s.flowSink = fn }
 
 // ExpireAndSnapshot drops entities/edges last seen before cutoff, then returns
 // a deep copy of what remains plus the expired counts — all under the lock so
@@ -110,8 +118,38 @@ func (s *TraceServer) deriveAll(td ptrace.Traces) (*graph.BatchWriteSet, int) {
 				builder.TemplatizeAttrs(buf)
 				builder.Derive(local, builder.Record{Attrs: resourceAttrs, SeriesAttrs: buf})
 				records++
+
+				if s.flowSink != nil {
+					s.flowSink(spanRecord(span, resourceAttrs, buf["span.name"]))
+				}
 			}
 		}
 	}
 	return local, records
+}
+
+// spanRecord deep-copies the fields the flow assembler needs from an OTLP span.
+// pdata is freed after Export returns, so every field is copied. templatizedName
+// is buf["span.name"] (already run through builder.TemplatizeAttrs). Deployment
+// is k8s.deployment.name, falling back to service.name.
+func spanRecord(span ptrace.Span, resourceAttrs map[string]string, templatizedName string) flows.SpanRecord {
+	deployment := resourceAttrs["k8s.deployment.name"]
+	if deployment == "" {
+		deployment = resourceAttrs["service.name"]
+	}
+	parentID := ""
+	if pid := span.ParentSpanID(); !pid.IsEmpty() {
+		parentID = pid.String()
+	}
+	return flows.SpanRecord{
+		TraceID:    span.TraceID().String(),
+		SpanID:     span.SpanID().String(),
+		ParentID:   parentID,
+		Deployment: deployment,
+		Namespace:  resourceAttrs["k8s.namespace.name"],
+		Name:       templatizedName,
+		StartNano:  uint64(span.StartTimestamp()),
+		EndNano:    uint64(span.EndTimestamp()),
+		Attrs:      stringifyMap(span.Attributes()),
+	}
 }
