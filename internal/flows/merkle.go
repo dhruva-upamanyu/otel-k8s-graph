@@ -4,7 +4,9 @@ package flows
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"hash"
 	"sort"
 )
 
@@ -44,19 +46,19 @@ func canonicalize(n *treeNode) *CanonicalNode {
 	sort.Slice(distinct, func(i, j int) bool { return distinct[i].Hash < distinct[j].Hash })
 
 	h := sha256.New()
-	h.Write([]byte(n.rec.Deployment))
-	h.Write([]byte{0x1f})
-	h.Write([]byte(n.rec.Namespace))
-	h.Write([]byte{0x1f})
-	h.Write([]byte(n.rec.Name))
-	h.Write([]byte{0x1e})
+	writeLenPrefixed(h, n.rec.Deployment)
+	writeLenPrefixed(h, n.rec.Namespace)
+	writeLenPrefixed(h, n.rec.Name)
+	var childCount [4]byte
+	binary.BigEndian.PutUint32(childCount[:], uint32(len(distinct)))
+	h.Write(childCount[:])
 	for _, c := range distinct {
-		h.Write([]byte(c.Hash))
-		h.Write([]byte{0x1d})
+		writeLenPrefixed(h, c.Hash)
 	}
+	hashHex := hex.EncodeToString(h.Sum(nil))
 
 	return &CanonicalNode{
-		Hash:       hex.EncodeToString(h.Sum(nil)),
+		Hash:       hashHex,
 		Deployment: n.rec.Deployment,
 		Namespace:  n.rec.Namespace,
 		Name:       n.rec.Name,
@@ -64,6 +66,16 @@ func canonicalize(n *treeNode) *CanonicalNode {
 		Children:   distinct,
 		srcEndNano: n.rec.EndNano,
 	}
+}
+
+// writeLenPrefixed writes a 4-byte big-endian length followed by s, so that the
+// concatenation of fields is unambiguous regardless of the field contents (no
+// separator byte can ever be confused for field data).
+func writeLenPrefixed(h hash.Hash, s string) {
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+	h.Write(n[:])
+	h.Write([]byte(s))
 }
 
 // countNodes returns the number of nodes in a canonical tree.

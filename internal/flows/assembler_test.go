@@ -80,3 +80,23 @@ func TestAssembler_RetriedSpanDoesNotDuplicateNode(t *testing.T) {
 		t.Fatalf("duplicate span id should dedup to one child, got %+v", got)
 	}
 }
+
+func TestAssembler_EvictsOldestWhenFull(t *testing.T) {
+	base := time.Unix(4000, 0)
+	clk := &fakeClock{t: base}
+	var got []*CanonicalNode
+	a := NewAssembler(10*time.Second, 3*time.Second, 2, clk.now, // maxTraces = 2
+		func(root *CanonicalNode, _ time.Time) { got = append(got, root) }, nil)
+
+	a.Ingest(SpanRecord{TraceID: "t1", SpanID: "1"})
+	clk.set(base.Add(1 * time.Second))
+	a.Ingest(SpanRecord{TraceID: "t2", SpanID: "1"})
+	clk.set(base.Add(2 * time.Second))
+	a.Ingest(SpanRecord{TraceID: "t3", SpanID: "1"}) // buffer full -> evict oldest (t1)
+
+	clk.set(base.Add(20 * time.Second))
+	a.Sweep()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 finalized traces (t1 evicted), got %d", len(got))
+	}
+}
