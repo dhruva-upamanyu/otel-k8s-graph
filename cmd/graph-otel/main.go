@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/encoding/gzip" // register gzip decompressor for OTLP clients
 
+	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/flows"
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/otlpreceiver"
 )
@@ -30,7 +31,10 @@ import (
 // request path), and a background flusher periodically writes the delta to
 // Redis. Raw spans are never persisted — each span is consumed to derive
 // relationships and then discarded. The query API lives in graph-read; this
-// binary serves only /healthz for k8s probes.
+// binary serves only /healthz for k8s probes. Spans also feed an in-process
+// flow assembler that reassembles each trace, collapses it into an abstract
+// Merkle-canonicalized structure, and stores the distinct structures ("flows")
+// in Redis under the <prefix>:flow:* keys.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -52,6 +56,11 @@ func main() {
 	flushDelay := envDuration(logger, "GRAPH_FLUSH_DELAY", 200*time.Second)
 	flushInterval := envDuration(logger, "GRAPH_FLUSH_INTERVAL", 60*time.Second)
 	expiryTTL := envDuration(logger, "GRAPH_EXPIRY_TTL", 100*time.Second)
+	flowWindow := envDuration(logger, "FLOW_WINDOW", 10*time.Second)
+	flowGrace := envDuration(logger, "FLOW_GRACE", 3*time.Second)
+	flowSweepInterval := envDuration(logger, "FLOW_SWEEP_INTERVAL", 1*time.Second)
+	flowFlushInterval := envDuration(logger, "FLOW_FLUSH_INTERVAL", 30*time.Second)
+	flowMaxTraces := envInt(logger, "FLOW_MAX_BUFFERED_TRACES", 100_000)
 
 	if redisHost == "" {
 		logger.Error("REDIS_HOST is required")
@@ -86,6 +95,10 @@ func main() {
 		os.Exit(1)
 	}
 	recv := otlpreceiver.NewTrace(logger)
+	flowStore := flows.NewFlowStore()
+	assembler := flows.NewAssembler(flowWindow, flowGrace, flowMaxTraces, time.Now,
+		func(root *flows.CanonicalNode, now time.Time) { flowStore.Observe(root, now) }, logger)
+	recv.SetFlowSink(assembler.Ingest)
 	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(grpcMaxRecvMiB * 1024 * 1024))
 	ptraceotlp.RegisterGRPCServer(grpcSrv, recv)
 	go func() {
@@ -97,6 +110,8 @@ func main() {
 
 	// Background flusher: periodically dump the accumulated graph to Redis.
 	go runFlusher(ctx, logger, recv, rdb, graphKeyPrefix, flushDelay, flushInterval, expiryTTL)
+	go assembler.Run(ctx, flowSweepInterval)
+	go runFlowFlusher(ctx, logger, flowStore, rdb, graphKeyPrefix, flowFlushInterval)
 
 	// HTTP server: /healthz only (liveness/readiness probes). The query API
 	// lives in graph-read; this binary just writes. /healthz is Redis-free
@@ -172,6 +187,36 @@ func runFlusher(ctx context.Context, logger *slog.Logger, recv *otlpreceiver.Tra
 	flush() // first flush at the delay mark
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
+
+// runFlowFlusher periodically writes the changed-flows delta to Redis until ctx
+// is cancelled.
+func runFlowFlusher(ctx context.Context, logger *slog.Logger, store *flows.FlowStore, rdb *redis.Client, prefix string, interval time.Duration) {
+	logger.Info("flow flusher scheduled", slog.Duration("interval", interval))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	flush := func() {
+		snap := store.SnapshotDirty()
+		if len(snap) == 0 {
+			return
+		}
+		fctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := flows.WriteFlowsToRedis(fctx, rdb, prefix, snap)
+		cancel()
+		if err != nil {
+			logger.Error("flow flush failed", slog.Any("err", err), slog.Int("flows", len(snap)))
+			return
+		}
+		logger.Info("flushed flows to redis", slog.Int("flows", len(snap)))
+	}
 	for {
 		select {
 		case <-ctx.Done():
