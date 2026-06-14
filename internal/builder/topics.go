@@ -8,23 +8,25 @@ import (
 	"github.com/dhruvaupamanyu/otel-k8s-graph/internal/graph"
 )
 
-const attrSpanName = "span.name"
+const (
+	attrSpanName         = "span.name"
+	attrMessagingDestKey = "messaging.destination.name"
+)
 
-// deriveTopicEdges inspects a messaging span-metric record and, if it
-// represents a producer or consumer side, upserts the topic entity and
-// bidirectional edges to the emitting container/pod.
+// deriveTopicEdges inspects a messaging span record and, if it represents a
+// producer or consumer side, upserts the topic entity and bidirectional edges
+// to the emitting container/pod.
 //
 // Detection: span.kind == SPAN_KIND_PRODUCER (publish) or
-// SPAN_KIND_CONSUMER (process/receive). Topic name is extracted from
-// span.name: OTel messaging convention names spans
-// "<destination> <operation>" (e.g., "payment-topic publish",
-// "payment-topic process"), so the first space-delimited token is the
-// topic.
+// SPAN_KIND_CONSUMER (process/receive). Topic name comes from
+// messaging.destination.name — the authoritative OTel attribute raw spans
+// carry — falling back to parsing the "<destination> <operation>" span.name
+// convention for older emitters that don't set it (see topicName).
 //
 // Producer:  container PUBLISHES topic / topic PUBLISHED_BY container.
 // Consumer:  container CONSUMES topic / topic CONSUMED_BY container.
 //
-// Records without an emitter or without a parseable topic name are
+// Records without an emitter or without a resolvable topic name are
 // silently skipped.
 func deriveTopicEdges(g graph.Writer, r Record, emitterID string) {
 	if emitterID == "" {
@@ -34,7 +36,7 @@ func deriveTopicEdges(g graph.Writer, r Record, emitterID string) {
 	if spanKind != "PRODUCER" && spanKind != "CONSUMER" {
 		return
 	}
-	topicName := extractTopicName(r.SeriesAttrs[attrSpanName])
+	topicName := resolveTopicName(r.SeriesAttrs)
 	if topicName == "" {
 		return
 	}
@@ -49,6 +51,18 @@ func deriveTopicEdges(g graph.Writer, r Record, emitterID string) {
 	topicID := "topic:" + topicName
 	addRelationship(g, emitterID, forward, reverse,
 		topicID, graph.KindTopic, topicName, "")
+}
+
+// resolveTopicName returns the topic name for a messaging span. It prefers the
+// authoritative messaging.destination.name attribute (set by modern OTel
+// messaging instrumentations) and falls back to parsing the span name for
+// emitters that don't set it. Topic names are stable, low-cardinality
+// identifiers (not path-like), so the value is used raw — no templatization.
+func resolveTopicName(series map[string]string) string {
+	if dest := series[attrMessagingDestKey]; dest != "" {
+		return dest
+	}
+	return extractTopicName(series[attrSpanName])
 }
 
 // extractTopicName returns the first space-delimited token of a
