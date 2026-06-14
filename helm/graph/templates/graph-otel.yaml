@@ -65,7 +65,7 @@ metadata:
   labels:
     app: graph-otel
 spec:
-  # OTLP ingest endpoint: point the collector's metrics exporter here
+  # OTLP ingest endpoint: point the collector's traces exporter here
   # (graph-otel-otlp:{{ .Values.graphOtel.service.otlpPort }}).
   type: {{ .Values.graphOtel.service.type }}
   selector:

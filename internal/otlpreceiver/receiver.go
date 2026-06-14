@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package otlpreceiver implements the OTLP MetricsService gRPC interface
-// so otel-k8s-graph can build its graph directly from collector pushes.
-// Only attribute sets are extracted; the actual metric values (sums,
-// gauges, histograms) are discarded because graph derivation depends
-// on resource and datapoint attributes alone.
+// Package otlpreceiver implements the OTLP ingest path for otel-k8s-graph,
+// turning collector pushes into builder.Records that derive the graph.
+//
+// TraceServer (traces.go) is the live receiver: graph-otel registers it as the
+// OTLP TracesService and derives relationships straight from spans.
+//
+// Server (this file) is the original OTLP MetricsService receiver, kept for
+// reference and as the equivalence-test oracle (a span and its equivalent span
+// metric must derive the identical graph). It is no longer wired into the
+// graph-otel binary. Only attribute sets are extracted; the actual metric
+// values (sums, gauges, histograms) are discarded because graph derivation
+// depends on resource and datapoint attributes alone.
 package otlpreceiver
 
 import (

@@ -108,7 +108,7 @@ graphK8s:
       cpu: 100m
 
 # =============================================================================
-# graph-otel — ingests OTel span metrics over gRPC, writes service
+# graph-otel — ingests OTel trace spans over gRPC, writes service
 # relationships (endpoint/topic/database + CALLS/QUERIES/PUBLISHES/EXPOSES).
 # Single relationship writer: replicas is fixed at 1 in the template.
 # =============================================================================
@@ -120,10 +120,10 @@ graphOtel:
   config:
     # -- `LISTEN_ADDR`: HTTP bind address; serves /healthz only (probes).
     listenAddr: ":8080"
-    # -- `GRPC_LISTEN_ADDR`: OTLP/gRPC bind address (collector pushes metrics here).
+    # -- `GRPC_LISTEN_ADDR`: OTLP/gRPC bind address (collector pushes spans here).
     grpcListenAddr: ":4317"
     # -- `GRPC_MAX_RECV_MSG_MIB`: max decompressed OTLP message size (MiB). Raise
-    # if collectors batch high-cardinality metrics past gRPC's 4 MiB default.
+    # if collectors batch high-volume trace spans past gRPC's 4 MiB default.
     grpcMaxRecvMsgMib: 32
     # -- `GRAPH_FLUSH_DELAY`: wait this long after startup for the in-memory
     # graph to stabilize before the first Redis flush.
@@ -136,7 +136,7 @@ graphOtel:
   service:
     # -- Service type for the OTLP ingest Service (graph-otel-otlp).
     type: ClusterIP
-    # -- OTLP gRPC port. Point the collector's metrics exporter at
+    # -- OTLP gRPC port. Point the collector's traces exporter at
     # graph-otel-otlp:<otlpPort>.
     otlpPort: 4317
   # -- (object) CPU/memory requests and limits.
