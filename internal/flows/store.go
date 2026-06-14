@@ -60,6 +60,18 @@ func (s *FlowStore) Observe(root *CanonicalNode, now time.Time) {
 	s.dirty[root.Hash] = struct{}{}
 }
 
+// RequeueDirty re-marks the given root hashes dirty so a failed flush retries
+// them on the next cycle. Idempotent; ignores hashes no longer in the store.
+func (s *FlowStore) RequeueDirty(hashes []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range hashes {
+		if _, ok := s.flows[h]; ok {
+			s.dirty[h] = struct{}{}
+		}
+	}
+}
+
 // SnapshotDirty returns value copies of the flows changed since the last call
 // and clears the dirty set.
 func (s *FlowStore) SnapshotDirty() []FlowSnapshot {

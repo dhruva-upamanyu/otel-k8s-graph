@@ -51,3 +51,16 @@ func TestFlowStore_SnapshotDirtyClears(t *testing.T) {
 		t.Fatal("second snapshot should be empty (dirty cleared)")
 	}
 }
+
+func TestFlowStore_RequeueDirtyRetriesAfterFailure(t *testing.T) {
+	s := NewFlowStore()
+	s.Observe(flow("x"), time.Unix(1, 0))
+	snap := s.SnapshotDirty() // clears dirty
+	if len(snap) != 1 {
+		t.Fatalf("want 1 flow, got %d", len(snap))
+	}
+	s.RequeueDirty([]string{snap[0].RootHash}) // simulate flush failure -> requeue
+	if got := s.SnapshotDirty(); len(got) != 1 {
+		t.Fatalf("requeued flow should be dirty again, got %d", len(got))
+	}
+}

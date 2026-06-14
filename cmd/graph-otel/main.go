@@ -212,7 +212,12 @@ func runFlowFlusher(ctx context.Context, logger *slog.Logger, store *flows.FlowS
 		err := flows.WriteFlowsToRedis(fctx, rdb, prefix, snap)
 		cancel()
 		if err != nil {
-			logger.Error("flow flush failed", slog.Any("err", err), slog.Int("flows", len(snap)))
+			hashes := make([]string, len(snap))
+			for i, f := range snap {
+				hashes[i] = f.RootHash
+			}
+			store.RequeueDirty(hashes)
+			logger.Error("flow flush failed; requeued", slog.Any("err", err), slog.Int("flows", len(snap)))
 			return
 		}
 		logger.Info("flushed flows to redis", slog.Int("flows", len(snap)))
